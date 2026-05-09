@@ -1,0 +1,51 @@
+# Namespaces для мероприятия. Создаются один раз ДО первого деплоя.
+#
+#   ranepa       — лендинг (главная страница) + общие ресурсы.
+#   ranepa-tools — code-server-pod'ы участников (среда вайбкодинга).
+#   ranepa-appN  — приложение N-го участника (один namespace на слот,
+#                  RBAC изолирует слоты друг от друга).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ranepa
+  labels:
+    event: ranepa
+    role: shared
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ranepa-tools
+  labels:
+    event: ranepa
+    role: tools
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ranepa-app1
+  labels: { event: ranepa, role: slot, slot: app1 }
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ranepa-app2
+  labels: { event: ranepa, role: slot, slot: app2 }
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ranepa-app3
+  labels: { event: ranepa, role: slot, slot: app3 }
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ranepa-app4
+  labels: { event: ranepa, role: slot, slot: app4 }
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ranepa-app5
+  labels: { event: ranepa, role: slot, slot: app5 }

@@ -1,0 +1,74 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ranepa-landing
+  namespace: ranepa
+  labels: { app: ranepa-landing }
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels: { app: ranepa-landing }
+  template:
+    metadata:
+      labels: { app: ranepa-landing }
+    spec:
+      imagePullSecrets:
+        - name: harbor-creds-ranepa
+      containers:
+        - name: landing
+          image: harbor.parsers360.ru:10443/ranepa/landing:0.1.0
+          imagePullPolicy: Always
+          ports:
+            - { name: http, containerPort: 80 }
+          resources:
+            requests: { cpu: "10m", memory: "16Mi" }
+            limits:   { cpu: "100m", memory: "64Mi" }
+          livenessProbe:
+            httpGet: { path: /, port: 80 }
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          readinessProbe:
+            httpGet: { path: /, port: 80 }
+            initialDelaySeconds: 2
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ranepa-landing
+  namespace: ranepa
+  labels: { app: ranepa-landing }
+spec:
+  type: ClusterIP
+  selector: { app: ranepa-landing }
+  ports:
+    - { name: http, port: 80, targetPort: 80, protocol: TCP }
+---
+# Ingress только на корень `/`. Подпути /app1../app5 и /dev/* —
+# обслуживаются ingress'ами в namespace'ах слотов и ranepa-tools,
+# они приоритетнее по PathType=Prefix совпадению.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ranepa-landing
+  namespace: ranepa
+  annotations:
+    kubernetes.io/ingress.class: traefik
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+spec:
+  rules:
+    - host: ranepa.gigaparsers.ru
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ranepa-landing
+                port: { number: 80 }

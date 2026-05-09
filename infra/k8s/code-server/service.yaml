@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: code-server-${APP_SLUG}
+  namespace: ranepa-tools
+  labels:
+    app: code-server
+    slot: ${APP_SLUG}
+spec:
+  type: ClusterIP
+  selector:
+    app: code-server
+    slot: ${APP_SLUG}
+  ports:
+    - name: ttyd
+      port: 80
+      targetPort: 7681
+      protocol: TCP
