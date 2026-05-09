@@ -1,0 +1,424 @@
+# План: «ranepa» — шаблон для вайбкодинг-мероприятия РАНХиГС
+#
+# Цель: дать 5 профессорам РАНХиГС инструмент, чтобы они «через чат»
+# (без терминала, без git, без Docker) собрали себе веб-эппу с
+# iOS-look-and-feel и опубликовали её на отдельном поддомене / подпути
+# домена ranepa.gigaparsers.ru.
+#
+# Ключевая особенность (зафиксировано после уточнений):
+#   ▸ профессор взаимодействует ТОЛЬКО с чатом ИИ-агента;
+#   ▸ агент сам клонирует шаблон, правит код, билдит, пушит в Harbor,
+#     делает kubectl apply, отвечает «готово, см. <url>»;
+#   ▸ репозиторий — публичный GitHub юзера (создаётся отдельно),
+#     там лежит шаблон + инструкции для агента (AGENTS.md/CLAUDE.md);
+#   ▸ один шаблон → 5 форков/веток/копий, по одному на профессора.
+#
+# Архитектурно зеркалим naisty-look:
+#   - edge nginx (5.188.118.125) терминирует TLS, проксирует на traefik k3s;
+#   - в кластере namespace ranepa (или 5 разных — см. q1), deploy+svc+ingress;
+#   - образы в Harbor harbor.parsers360.ru:10443/ranepa/...;
+#   - traefik отдаёт self-signed на unknown SNI, edge nginx проксирует
+#     с proxy_ssl_verify off (паттерн naisty-look).
+
+================================================================================
+ОТВЕТЫ ЮЗЕРА (зафиксировано 2026-05-09)
+================================================================================
+
+u1. `rX37kTEjWESJsk3` = пароль для доступа к серверу 5.188.118.125
+    (passphrase к id_ed25519_new или fallback root pwd). Используется
+    при ssh, выпуск серта — обычным certbot на самом хосте.
+
+u2. 5 профессоров. Мульти-тенант нужен (иначе они затрут друг друга),
+    но в МАЛОМ масштабе — fork-per-prof / branch-per-prof, не SaaS.
+
+u3. Уровень: «общаются только с чатом». Терминал, git, vite, docker —
+    НЕ ОТКРЫВАЮТ. Значит вся CI/CD цепочка — на стороне агента.
+
+u4. Бренд РАНХиГС — можно, цвета/лого/шрифт заложим в дизайн-токены
+    после получения брендбука (или возьмём публичные с ranepa.ru).
+
+u5. Репозиторий: публичный GitHub юзера. Туда грузим:
+      - шаблон приложения (frontend + опционально backend),
+      - AGENTS.md/CLAUDE.md — спека работы для агента,
+      - infra/ — k8s манифесты + nginx-конфиги,
+      - examples/prompts.md — стартовые промпты для профессоров.
+    Каждому профессору — свой fork (или ветка), свой kubeconfig в свой ns.
+
+================================================================================
+НОВЫЕ РАЗВИЛКИ — нужно решить ДО кода
+================================================================================
+
+[?] q1. Изоляция приложений 5 профессоров
+        А) 5 неймспейсов: ranepa-prof1 … ranepa-prof5. Свой ingress
+           на свой host: prof1.ranepa.gigaparsers.ru. Минус: wildcard-cert
+           или 5 отдельных certbot-выпусков, 5 server-блоков в edge nginx.
+        Б) 1 неймспейс ranepa, 5 deployment+svc, ingress по подпути:
+           ranepa.gigaparsers.ru/prof1 … /prof5. 1 серт, 1 server-блок.
+           Минус: vite/spa-роутинг придётся учить про base path
+           (vite.config: base: '/prof1/'). И профессор должен помнить,
+           что его «корень» это /prof1/.
+        В) 1 неймспейс, 1 deployment, профессор делает PR в общий
+           репозиторий, и контент собирается как мультистраничный сайт.
+           Самое простое инфраструктурно, но плохо подходит под
+           «5 разных приложений», получится «5 разделов одного сайта».
+        Дефолт — Б (подпути). Серт один, edge-nginx один блок,
+        DNS — одна запись. Объяснить агенту в AGENTS.md как
+        выставить vite base из переменной окружения PROF_SLUG.
+
+[?] q2. Где живёт агент-кодер
+        А) Claude Code на ноуте профессора. Дать .zip с готовым
+           проектом + .claude/settings.json + Harbor/kubeconfig.
+           Профессор запускает `claude` в папке, пишет в TUI.
+           Минус: всё-таки нужно установить Claude Code и Node — это
+           не «только чат» в чистом виде, но ближайшее, что есть.
+        Б) Claude Code в дев-контейнере, доступ через
+           code-server / GitHub Codespaces / Gitpod в браузере.
+           Профессор открывает ссылку, видит чат, пишет.
+           Дороже по хостингу, но НЕ требует установки чего-либо.
+        В) Кастомный web-UI на ranepa.gigaparsers.ru/admin,
+           внутри Claude Agent SDK, агенту через MCP подключены
+           git/docker/kubectl. Самый «product-grade» вариант, но
+           требует написать сам web-UI и настроить песочницу.
+        Г) Lovable/v0/bolt — отдать на сторонний сервис, потом
+           перетянуть собранный код к себе. Самый низкий порог
+           для профессора, но теряем контроль над стеком и инфрой.
+        Дефолт — Б (Claude Code в дев-контейнере с code-server).
+        Поднимем 5 контейнеров (по одному на профессора) с
+        предустановленным Claude Code, токенами Harbor + kubeconfig
+        с RBAC только на свой ns + ssh-deploy-key к репе.
+        Подтверждение НУЖНО — это меняет объём работы значительно.
+
+[?] q3. Стек шаблона
+        А) React + Vite + TS + Tailwind (q2-дефолт из v1 плана).
+        Б) Svelte 5 + TS — как naisty-look, переиспользуем 1-в-1.
+        В) Vanilla HTML + Alpine.js — нулевой порог входа для агента,
+           но ограничивает сложность. Для «5 простых демо-эппов» —
+           может быть достаточно.
+        Дефолт — А (React + Vite + TS + Tailwind). Claude в 2026 пишет
+        этот стек идиоматично без подсказок, и он самый
+        AI-агент-friendly из перечисленных.
+
+[?] q4. Бэкенд
+        А) Без бэкенда. Только LocalStorage + статика. Достаточно
+           для 90% «учебных» эппов (опросник, чек-лист, словарь).
+        Б) Минимальный FastAPI с /api/echo, без БД. Профессор может
+           попросить агента «добавь ручку для X» — агент допишет.
+        В) FastAPI + LiteLLM — даём ИИ-чат-ручку «из коробки» (через
+           litellm.openclaw.svc, как у naisty-look). Профессор может
+           за 10 минут сделать «помощник по моему курсу».
+        Дефолт — А для шаблона, опция В описана в AGENTS.md
+        («попроси агента включить ИИ-чат — он добавит /api/ai/chat»).
+        Бэкенд лишний для большинства учебных эпп, и его отсутствие
+        упрощает деплой (просто статика-в-nginx, nodebackend, no PVC).
+
+[?] q5. Что выкладываем на корень ranepa.gigaparsers.ru/
+        А) Лендинг мероприятия: «5 приложений профессоров», 5 кнопок
+           ведут на /prof1 … /prof5. Минимум 1 час работы.
+        Б) Просто redirect на /info или показ 404 — корень не нужен.
+        Дефолт — А, лендинг. Дополнительно: показывать билд-статус
+        каждого приложения (зелёный/красный кружок).
+
+================================================================================
+АРХИТЕКТУРА ИНСТАНСОВ ПРОФЕССОРОВ (если q2=Б подтверждён)
+================================================================================
+
+   ┌──────────────────────────────────────────────────┐
+   │  GitHub: github.com/<user>/ranepa-template       │
+   │  - main: канонический шаблон                     │
+   │  - branches: prof1 … prof5 (или 5 форков)        │
+   └──────────────────────────────────────────────────┘
+                       │ git clone (deploy key)
+                       ▼
+   ┌──────────────────────────────────────────────────┐
+   │  k8s ns ranepa-tools                             │
+   │  - 5 dev-pod'ов code-server-prof1…prof5          │
+   │    каждый: Node, Claude Code, docker (rootless), │
+   │    kubectl с RBAC только на ranepa-prof<N>,      │
+   │    Harbor robot$ranepa+push, ssh-key для git push│
+   │  - доступ: prof<N>-dev.ranepa.gigaparsers.ru     │
+   │    с базовой авторизацией (basic auth / oauth2-  │
+   │    proxy + список email профессоров)             │
+   └──────────────────────────────────────────────────┘
+                       │ docker build → harbor push
+                       │ kubectl apply -n ranepa-prof<N>
+                       ▼
+   ┌──────────────────────────────────────────────────┐
+   │  k8s ns ranepa-prof<N>                           │
+   │  - deployment: ranepa-app:<sha>                  │
+   │  - svc, ingress на ranepa.gigaparsers.ru/prof<N> │
+   └──────────────────────────────────────────────────┘
+                       │
+                       ▼
+   ┌──────────────────────────────────────────────────┐
+   │  Лендинг: ranepa.gigaparsers.ru/                 │
+   │  - 5 кнопок: «приложение проф. <Имя>»            │
+   │  - билд-статус, последний коммит                 │
+   └──────────────────────────────────────────────────┘
+
+================================================================================
+ФАЗЫ
+================================================================================
+
+ФАЗА 0. Подготовка
+─────────────────────────────────────────────────────────────────────
+
+[ ] 0.1. Подтвердить дефолты по q1-q5 (ниже под каждым стоит «Дефолт — …»).
+[ ] 0.2. Юзер создаёт публичный github.com/<user>/ranepa-template.
+[ ] 0.3. Получить от юзера:
+        - имя GitHub-репы;
+        - брендбук РАНХиГС (логотип + 2-3 цвета + шрифт), если есть;
+        - email/имена 5 профессоров (для basic-auth доступа в q2.Б).
+
+ФАЗА 1. Edge-nginx + TLS на ranepa.gigaparsers.ru
+─────────────────────────────────────────────────────────────────────
+
+[ ] 1.1. SSH на 5.188.118.125 (ключ id_ed25519_new, passphrase `rX37kTEjWESJsk3`).
+        Понять, как организован nginx: один docker-контейнер? compose?
+        где /etc/nginx/conf.d, где /etc/letsencrypt, есть ли certbot
+        на хосте или внутри контейнера. Посмотреть существующий
+        server-блок naisty-look.gigaparsers.ru как образец.
+
+[ ] 1.2. DNS: проверить A-запись ranepa.gigaparsers.ru → 5.188.118.125.
+        Если q1=А (поддомены) — тоже нужен wildcard *.ranepa.gigaparsers.ru
+        (или 5 отдельных A-записей).
+
+[ ] 1.3. Выпустить TLS-серт через certbot:
+          certbot certonly --webroot -w /var/www/certbot \
+            -d ranepa.gigaparsers.ru \
+            --email <admin> --agree-tos --non-interactive
+        Если q2=Б — добавить ещё domain'ы prof1-dev … prof5-dev
+        в тот же серт через -d флаги.
+
+[ ] 1.4. Скопировать server-блок naisty-look, поменять host и
+        корень upstream'а. Сохранить локально под
+        infra/edge-nginx/ranepa.gigaparsers.ru.conf.
+        Pattern (см. naisty-look ingress.yaml):
+          server {
+            listen 443 ssl http2;
+            server_name ranepa.gigaparsers.ru;
+            ssl_certificate /etc/letsencrypt/live/ranepa.gigaparsers.ru/fullchain.pem;
+            ssl_certificate_key /etc/letsencrypt/live/ranepa.gigaparsers.ru/privkey.pem;
+            client_max_body_size 25M;
+            location / {
+              proxy_pass https://10.43.58.167:10443;
+              proxy_ssl_verify off;
+              proxy_set_header Host $host;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $scheme;
+              proxy_http_version 1.1;
+              proxy_read_timeout 60s;
+            }
+          }
+        + 80→443 редирект.
+
+[ ] 1.5. nginx -t, nginx -s reload. Проверить:
+          curl -I https://ranepa.gigaparsers.ru/
+        ожидаемо 503/404 от traefik (ingress в k8s ещё нет).
+
+ФАЗА 2. Harbor + базовый k8s
+─────────────────────────────────────────────────────────────────────
+
+[ ] 2.1. В Harbor создать project `ranepa`.
+[ ] 2.2. Robot `ranepa+push` (push+pull только в ranepa).
+        Сохранить токен в gitlab_setup/k3s_prod/initial_deploy_sequence.sh.
+[ ] 2.3. Заранее заготовить namespaces:
+          ranepa            — общий, для лендинга
+          ranepa-prof1..5   — по одному на профессора
+          ranepa-tools      — code-server'ы профессоров (если q2=Б)
+[ ] 2.4. В каждом ns: docker-registry secret harbor-creds-ranepa.
+[ ] 2.5. Подготовить 5 kubeconfig'ов с RBAC «только на свой ns».
+        ServiceAccount + Role(deploy/svc/ingress get/list/create/update)
+        + RoleBinding + сгенерированный kubeconfig (kubectl create token).
+
+ФАЗА 3. Шаблон-приложения (содержимое github.com/<user>/ranepa-template)
+─────────────────────────────────────────────────────────────────────
+
+(Стек q3=А: Vite + React + TS + Tailwind; q4=А: без бэкенда)
+
+[ ] 3.1. Структура репы:
+        ranepa-template/
+        ├── app/                    # Vite + React + TS + Tailwind
+        │   ├── public/
+        │   │   ├── apple-touch-icon.png
+        │   │   ├── manifest.webmanifest
+        │   │   └── icons/
+        │   ├── src/
+        │   │   ├── App.tsx
+        │   │   ├── main.tsx
+        │   │   ├── routes/         # 3 примера: Home, List, Detail
+        │   │   ├── components/
+        │   │   ├── lib/
+        │   │   └── styles/
+        │   ├── index.html
+        │   ├── vite.config.ts      # base: env.PROF_BASE || '/'
+        │   ├── tailwind.config.ts
+        │   ├── package.json
+        │   └── tsconfig.json
+        ├── infra/
+        │   ├── Dockerfile          # копия look-bot-miniapp
+        │   ├── nginx.conf          # SPA + try_files
+        │   └── k8s/
+        │       ├── deployment.yaml
+        │       ├── service.yaml
+        │       └── ingress.yaml    # шаблон с {{PROF_SLUG}}
+        ├── scripts/
+        │   ├── deploy.sh           # build → push → kubectl apply
+        │   └── reset.sh            # вернуть «как было»
+        ├── AGENTS.md               # спека для агента (см. фазу 5)
+        ├── CLAUDE.md               # симлинк на AGENTS.md
+        ├── README.md               # для профессора, на русском
+        └── examples/
+            └── prompts.md          # 10-15 готовых промптов
+
+[ ] 3.2. iOS-look базовые токены:
+        - <meta viewport=...,viewport-fit=cover>
+        - apple-mobile-web-app-capable=yes
+        - apple-mobile-web-app-status-bar-style=black-translucent
+        - apple-touch-icon (180×180)
+        - manifest.webmanifest (display=standalone, theme_color, icons 192/512)
+        - safe-area-inset-* в Tailwind через arbitrary values
+        - rounded-2xl, тапаемые ≥44pt, system font stack
+        - dark mode по prefers-color-scheme
+
+[ ] 3.3. Три скрин-примера, все паттерны мини-эпы:
+        - HomeScreen: hero + кнопка → переход;
+        - ListScreen: грид/лист карточек + tap → детали;
+        - DetailScreen: форма + textarea → сохранить в LocalStorage.
+        Цель — чтобы агент копировал и подменял содержимое.
+
+[ ] 3.4. vite.config.ts — base: process.env.PROF_BASE || '/'.
+        В Dockerfile: ARG PROF_BASE → npm run build с правильным base.
+        В deployment.yaml: ARG прокидывается из CI/скрипта.
+
+[ ] 3.5. Брендинг: подставить цвета РАНХиГС (после получения от юзера).
+        Логотип положить в public/logo.svg.
+
+ФАЗА 4. Скрипт деплоя (то, что вызывает агент)
+─────────────────────────────────────────────────────────────────────
+
+[ ] 4.1. scripts/deploy.sh:
+        export PROF_SLUG=prof1
+        export VERSION=$(git rev-parse --short HEAD)
+        docker build \
+          --build-arg PROF_BASE=/$PROF_SLUG/ \
+          -t harbor.parsers360.ru:10443/ranepa/app-$PROF_SLUG:$VERSION .
+        docker push harbor.parsers360.ru:10443/ranepa/app-$PROF_SLUG:$VERSION
+        envsubst < infra/k8s/deployment.yaml | kubectl apply -n ranepa-$PROF_SLUG -f -
+        kubectl -n ranepa-$PROF_SLUG rollout status deploy/ranepa-app
+
+[ ] 4.2. scripts/reset.sh: git fetch origin && git reset --hard origin/main
+        (для случая «AI всё сломал»).
+
+[ ] 4.3. Все скрипты должны быть idempotent и читаемые — агент будет
+        их вызывать, не редактируя.
+
+ФАЗА 5. AGENTS.md — спека работы агента (КЛЮЧЕВОЙ ФАЙЛ)
+─────────────────────────────────────────────────────────────────────
+
+[ ] 5.1. Раздел «Что это за репозиторий»
+        - Назначение, аудитория (профессор без терминала),
+          обязательства агента (после каждой правки — задеплоить и
+          ответить ссылкой).
+
+[ ] 5.2. Раздел «Архитектура»
+        - Где код приложения (app/src/).
+        - Где НЕ ТРОГАТЬ без явной просьбы (infra/, scripts/,
+          vite.config.ts base, Dockerfile, k8s/*).
+        - Где живут переменные окружения (.env.local).
+
+[ ] 5.3. Раздел «Как добавить новый экран» — пошагово, c кодом.
+
+[ ] 5.4. Раздел «Как добавить ручку API» — заглушка, для случая
+        если профессор попросит бэкенд (агент сам поднимет
+        FastAPI-каркас по инструкции).
+
+[ ] 5.5. Раздел «Как задеплоить» — ровно одна команда:
+          PROF_SLUG=$PROF_SLUG ./scripts/deploy.sh
+        + что делать, если упало (kubectl logs, kubectl describe).
+
+[ ] 5.6. Раздел «Стиль кода»
+        - TypeScript строгий, без any;
+        - компоненты ≤ 200 строк;
+        - Tailwind, без inline-стилей;
+        - не ломать структуру папок.
+
+[ ] 5.7. Раздел «Стиль общения с профессором»
+        - Русский язык;
+        - не задавать технических вопросов («какой PostgreSQL?»),
+          выбирать дефолты сам;
+        - после деплоя — давать ссылку на превью + что изменилось;
+        - если запрос неоднозначный — переспросить ОДИН раз
+          в категориях «функция / визуал / содержание».
+
+ФАЗА 6. Среда профессора (если q2=Б подтверждён)
+─────────────────────────────────────────────────────────────────────
+
+[ ] 6.1. Dockerfile «code-server-claude»:
+        - base: ghcr.io/coder/code-server:latest или devcontainer;
+        - + node 20, docker (DinD или сокет хоста), kubectl, gh cli;
+        - + Claude Code CLI (npm i -g @anthropic-ai/claude-code);
+        - + git, ssh-agent;
+        - + предзалитый ANTHROPIC_API_KEY (из секрета).
+
+[ ] 6.2. Deployment ranepa-tools/code-server-prof<N>:
+        - PVC 5Gi на /home/coder (сохраняет работу профессора);
+        - сервисный аккаунт с RoleBinding только на ranepa-prof<N>;
+        - env-секрет с GITHUB_DEPLOY_KEY, HARBOR_TOKEN, ANTHROPIC_API_KEY;
+        - ingress на prof<N>-dev.ranepa.gigaparsers.ru с basic-auth.
+
+[ ] 6.3. Init-скрипт при старте контейнера:
+        - git clone github.com/<user>/ranepa-template /home/coder/app;
+        - git checkout -b prof<N>;
+        - открыть Claude Code в этой папке.
+
+[ ] 6.4. Раздать ссылки + пароли 5 профессорам.
+        Объяснить: «Открой ссылку → пиши в чат, что ты хочешь.
+        Когда будет готово — он напишет адрес твоего приложения».
+
+ФАЗА 7. Лендинг ranepa.gigaparsers.ru/ (q5=А)
+─────────────────────────────────────────────────────────────────────
+
+[ ] 7.1. Простой статический сайт — отдельный deployment
+        ranepa-landing в ns ranepa.
+[ ] 7.2. 5 карточек профессоров с кнопкой «Открыть приложение».
+        Билд-статус — опционально (читать из k8s API через JS — не
+        стоит, лучше периодически генерить статический JSON через CronJob).
+[ ] 7.3. Ingress: ranepa.gigaparsers.ru/ (PathType=Exact на /) → лендинг,
+        /prof<N> → app-prof<N>-svc.
+
+ФАЗА 8. Тестовый прогон
+─────────────────────────────────────────────────────────────────────
+
+[ ] 8.1. От лица «фейкового профессора» открыть код-сервер,
+        написать промпт «сделай экран приветствия с моим именем»,
+        дождаться деплоя, открыть https://ranepa.gigaparsers.ru/prof1
+        с iPhone Safari.
+[ ] 8.2. Lighthouse mobile: PWA ≥ 90, Performance ≥ 90.
+[ ] 8.3. Проверить «Поделиться → На экран Домой» — иконка + full-screen.
+[ ] 8.4. Прогнать сценарий «AI сломал» → reset.sh → всё ок.
+[ ] 8.5. Прогнать промпты из examples/prompts.md по списку.
+
+================================================================================
+ОТКРЫТЫЕ ВОПРОСЫ — нужны ответы юзера
+================================================================================
+
+[ ] u6. q2: где живёт агент-кодер? (А ноут / Б code-server в кластере /
+        В кастомный web-UI / Г Lovable). От этого зависит большая
+        часть фаз 2 и 6. Дефолт — Б.
+
+[ ] u7. q1: изоляция (А поддомены / Б подпути / В единый сайт).
+        Дефолт — Б (подпути). Подтвердить.
+
+[ ] u8. Имя GitHub-репы и владелец? Без этого нельзя начать
+        раскладывать файлы.
+
+[ ] u9. Брендбук РАНХиГС — если есть PDF/гайд, прислать. Иначе
+        возьму публичные цвета с ranepa.ru и дефолтный шрифт.
+
+[ ] u10. Лендинг (q5): нужен ли он, или редирект на /prof1?
+         Дефолт — да, нужен, с 5 карточками.
+
+[ ] u11. ANTHROPIC_API_KEY для code-server-инстансов профессоров —
+         кто оплачивает? Лимиты на профессора (rate-limit /
+         daily token cap)? Без этого один профессор может «съесть»
+         весь бюджет за час.
