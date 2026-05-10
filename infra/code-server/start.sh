@@ -33,6 +33,27 @@ if [[ -f /etc/claude-creds/credentials.json ]]; then
   echo "==> Claude creds installed (subscriptionType=$(jq -r '.claudeAiOauth.subscriptionType' /home/coder/.claude/.credentials.json))"
 fi
 
+# Pre-seed ~/.claude.json чтобы Claude не показывал участнику onboarding-
+# wizard'ов и trust-диалогов на /home/coder/work (для участников экран —
+# это чат, не set-up визард). Если файл не существует — создаём минимальный;
+# если уже есть — патчим только наши флаги, остальные данные сохраняем.
+CLAUDE_STATE=/home/coder/.claude.json
+if [[ ! -f "$CLAUDE_STATE" ]]; then
+  echo '{}' > "$CLAUDE_STATE"
+fi
+jq '
+  .hasCompletedOnboarding = true |
+  .bypassPermissionsModeAccepted = true |
+  .projects = ((.projects // {}) + {
+    "/home/coder/work": ((.projects["/home/coder/work"] // {}) + {
+      hasTrustDialogAccepted: true,
+      hasCompletedProjectOnboarding: true
+    })
+  })
+' "$CLAUDE_STATE" > "$CLAUDE_STATE.tmp" && mv "$CLAUDE_STATE.tmp" "$CLAUDE_STATE"
+chmod 600 "$CLAUDE_STATE"
+echo "==> Claude state: onboarding done, /home/coder/work trusted"
+
 # 1. Стартуем sing-box в фоне для туннеля к api.anthropic.com.
 #    api.anthropic.com заблокирован из РФ; sing-box разворачивает
 #    inbound mixed на 127.0.0.1:1088 (одновременно SOCKS5 и HTTP).
