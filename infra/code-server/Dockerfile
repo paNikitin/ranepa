@@ -40,6 +40,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -fsSL https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 -o /usr/local/bin/ttyd \
     && chmod +x /usr/local/bin/ttyd
 
+# sing-box — клиент VLESS+REALITY. Нужен потому что api.anthropic.com
+# из РФ напрямую недоступен. Запускается в фоне в start.sh, выставляет
+# mixed (SOCKS5+HTTP) inbound на 127.0.0.1:1088, claude ходит через
+# HTTPS_PROXY. Конфиг с реальными ключами — k8s secret vless-config.
+RUN curl -fsSL https://github.com/SagerNet/sing-box/releases/download/v1.10.7/sing-box-1.10.7-linux-amd64.tar.gz -o /tmp/sb.tgz \
+    && tar -xzf /tmp/sb.tgz -C /tmp \
+    && mv /tmp/sing-box-*/sing-box /usr/local/bin/sing-box \
+    && chmod +x /usr/local/bin/sing-box \
+    && rm -rf /tmp/sb.tgz /tmp/sing-box-*
+
 # Claude Code CLI — главный инструмент.
 RUN npm install -g @anthropic-ai/claude-code
 

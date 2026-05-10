@@ -31,6 +31,29 @@ kubectl -n ranepa-tools create secret generic claude-credentials \
   --from-file=credentials.json="$HOME/.claude/.credentials.json"
 ```
 
+### 2b. VLESS+REALITY proxy для api.anthropic.com
+
+api.anthropic.com из РФ заблокирован. Внутри pod'а sing-box поднимает
+mixed-inbound на 127.0.0.1:1088 и тоннелит исходящие в VLESS+REALITY
+gateway. Перед apply нужен secret `vless-config`. Шаблон конфига —
+[`infra/code-server/sing-box.template.json`](../../code-server/sing-box.template.json).
+
+Из строки `vless://<UUID>@<HOST>:<PORT>/?security=reality&pbk=<PBK>&sni=<SNI>&sid=<SID>&fp=chrome&flow=xtls-rprx-vision`
+заполнить плейсхолдеры в шаблоне (UUID, HOST, PORT, PBK, SNI, SID),
+сохранить как `/tmp/sing-box.json`, затем:
+
+```sh
+kubectl -n ranepa-tools create secret generic vless-config \
+  --from-file=config.json=/tmp/sing-box.json
+rm /tmp/sing-box.json   # реальный конфиг с ключами в репу не коммитим
+```
+
+Проверить, что sing-box валидно его читает:
+
+```sh
+sing-box check -c /tmp/sing-box.json
+```
+
 ### 3. Kubeconfig секреты для каждого слота
 
 ```sh
