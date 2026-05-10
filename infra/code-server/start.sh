@@ -22,6 +22,26 @@ set -e
 
 WORKDIR="/home/coder/work"
 
+# Wait for DinD sidecar to be ready. Docker socket в emptyDir
+# /var/run/docker.sock появляется когда dockerd готов принимать команды.
+echo "==> Waiting for DinD sidecar"
+for i in $(seq 1 60); do
+  if [[ -S /var/run/docker.sock ]] && docker info >/dev/null 2>&1; then
+    echo "    DinD ready"
+    break
+  fi
+  sleep 1
+done
+
+# Harbor docker login через смонтированный k8s secret harbor-creds-ranepa.
+# Secret type docker-registry имеет ключ .dockerconfigjson — это ровно тот
+# формат, который docker CLI ожидает в ~/.docker/config.json.
+if [[ -f /etc/harbor-creds/.dockerconfigjson ]]; then
+  mkdir -p /home/coder/.docker
+  install -m 600 /etc/harbor-creds/.dockerconfigjson /home/coder/.docker/config.json
+  echo "==> Harbor docker login configured"
+fi
+
 # Copy Claude OAuth-кред из секрета (mount /etc/claude-creds, owner=root)
 # в ~/.claude/.credentials.json (writable, owner=coder). Иначе директория
 # /home/coder/.claude/ остаётся root-owned после k8s subPath mount, и
@@ -105,6 +125,8 @@ else
 fi
 
 # Первый запуск — клонировать шаблон и переключиться на ветку слота.
+# Последующие запуски — fetch + rebase на свежий main, чтобы участник
+# не сидел на старом срезе.
 if [[ ! -d "$WORKDIR/.git" ]]; then
   echo "==> Cloning template into $WORKDIR (slot=$APP_SLUG)"
   mkdir -p "$WORKDIR"
@@ -113,6 +135,14 @@ if [[ ! -d "$WORKDIR/.git" ]]; then
   git checkout -b "$APP_SLUG" 2>/dev/null || git checkout "$APP_SLUG"
 
   ( cd app && npm install --no-audit --no-fund )
+else
+  cd "$WORKDIR"
+  # При перезапуске pod'а подтягиваем свежие коммиты main в нашу ветку.
+  # Если у участника уже есть свои коммиты в этой ветке — git pull --rebase
+  # просто заставит конфликт; мы не пытаемся его разрешать молча.
+  echo "==> Updating repo on restart"
+  git fetch origin main 2>&1 | head -3 || true
+  git pull --rebase origin main 2>&1 | head -5 || echo "    (skipped — local commits)"
 fi
 
 cd "$WORKDIR"
@@ -145,7 +175,6 @@ exec ttyd \
   --port 7681 \
   --interface 0.0.0.0 \
   --writable \
-  --once=false \
-  -t titleFixed="Слот ${APP_SLUG} — вайбкодинг" \
+  -t titleFixed="Slot ${APP_SLUG}" \
   -t fontSize=16 \
   -- bash -lc "cd $WORKDIR && claude"

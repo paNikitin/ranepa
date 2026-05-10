@@ -53,14 +53,51 @@ spec:
         fsGroup: 1000
 
       containers:
+        # ─────────────────────────────────────────────────────────────
+        # DinD sidecar: даёт изолированный docker daemon для билдов
+        # участника. Альтернатива монтированию /var/run/docker.sock с
+        # хоста (которое давало coder root-уровень доступа к k3s узлу).
+        # Сейчас сокет живёт в emptyDir и виден только обоим контейнерам
+        # этого pod'а. Privileged всё ещё нужен (DinD требует
+        # cgroup/mount/network capabilities), но blast radius сжат
+        # до самого pod'а.
+        # ─────────────────────────────────────────────────────────────
+        - name: dind
+          image: docker:27-dind
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          args:
+            - --host=unix:///var/run/docker.sock
+            - --tls=false                # pod-internal communication
+          env:
+            - name: DOCKER_TLS_CERTDIR
+              value: ""                  # disable TLS auto-setup
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits:   { cpu: "2",    memory: "1Gi" }
+          volumeMounts:
+            - name: dind-sock
+              mountPath: /var/run
+            - name: dind-storage
+              mountPath: /var/lib/docker
+          livenessProbe:
+            exec:
+              command: ["docker", "info"]
+            initialDelaySeconds: 15
+            periodSeconds: 30
+
         - name: code-server
-          image: harbor.parsers360.ru:10443/ranepa/code-server:0.1.2
+          image: harbor.parsers360.ru:10443/ranepa/code-server:0.1.4
           imagePullPolicy: Always
           env:
             - name: APP_SLUG
               value: "${APP_SLUG}"
             - name: HOME
               value: "/home/coder"
+            # DOCKER_HOST указывает CLI на сокет DinD-сайдкара.
+            - name: DOCKER_HOST
+              value: "unix:///var/run/docker.sock"
             # Гасим non-essential telemetry/device-fingerprint trafic.
             # Без этого Anthropic с hosting-IP даёт 403 Request not allowed
             # на любой запрос (даже с валидным OAuth-токеном Max 5x).
@@ -95,8 +132,11 @@ spec:
               mountPath: /etc/sing-box/config.json
               subPath: config.json
               readOnly: true
-            - name: docker-sock
-              mountPath: /var/run/docker.sock
+            - name: harbor-creds
+              mountPath: /etc/harbor-creds
+              readOnly: true
+            - name: dind-sock
+              mountPath: /var/run
           readinessProbe:
             tcpSocket: { port: 7681 }
             initialDelaySeconds: 5
@@ -122,7 +162,11 @@ spec:
           secret:
             secretName: vless-config
             defaultMode: 0400
-        - name: docker-sock
-          hostPath:
-            path: /var/run/docker.sock
-            type: Socket
+        - name: harbor-creds
+          secret:
+            secretName: harbor-creds-ranepa
+            defaultMode: 0400
+        - name: dind-sock
+          emptyDir: {}
+        - name: dind-storage
+          emptyDir: {}
