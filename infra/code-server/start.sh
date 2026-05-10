@@ -124,25 +124,25 @@ else
   echo "==> Claude API requests will likely fail from this pod (RU blocking)"
 fi
 
-# Первый запуск — клонировать шаблон и переключиться на ветку слота.
-# Последующие запуски — fetch + rebase на свежий main, чтобы участник
-# не сидел на старом срезе.
+# Шаблон в /home/coder/work на ветке main. На каждом старте pod'а
+# делаем hard reset к origin/main — участник всегда стартует с самой
+# свежей версии шаблона. Если он попросил агента поменять файлы и они
+# не задеплоились (== не закоммичены и пушнуты), при рестарте pod'а они
+# потеряются — это намеренно: deploy.sh — единственный путь сохранить
+# работу. Деплой пакует образ в Harbor с git-sha как тегом, k8s
+# подхватывает из ns ranepa-${APP_SLUG}.
 if [[ ! -d "$WORKDIR/.git" ]]; then
   echo "==> Cloning template into $WORKDIR (slot=$APP_SLUG)"
   mkdir -p "$WORKDIR"
   git clone https://github.com/paNikitin/ranepa.git "$WORKDIR"
   cd "$WORKDIR"
-  git checkout -b "$APP_SLUG" 2>/dev/null || git checkout "$APP_SLUG"
-
   ( cd app && npm install --no-audit --no-fund )
 else
   cd "$WORKDIR"
-  # При перезапуске pod'а подтягиваем свежие коммиты main в нашу ветку.
-  # Если у участника уже есть свои коммиты в этой ветке — git pull --rebase
-  # просто заставит конфликт; мы не пытаемся его разрешать молча.
-  echo "==> Updating repo on restart"
-  git fetch origin main 2>&1 | head -3 || true
-  git pull --rebase origin main 2>&1 | head -5 || echo "    (skipped — local commits)"
+  echo "==> Updating repo to latest origin/main"
+  git fetch origin main 2>&1 | tail -3 || true
+  git reset --hard origin/main 2>&1 | tail -2 || true
+  git checkout main 2>&1 | tail -2 || true
 fi
 
 cd "$WORKDIR"

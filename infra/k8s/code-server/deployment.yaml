@@ -67,9 +67,22 @@ spec:
           imagePullPolicy: IfNotPresent
           securityContext:
             privileged: true
+            runAsUser: 0       # переопределяем pod-level runAsUser=1000;
+            runAsGroup: 0      # dockerd-rootful требует root
           args:
             - --host=unix:///var/run/docker.sock
             - --tls=false                # pod-internal communication
+            - --insecure-registry=harbor.parsers360.ru:10443
+          # postStart хук в side-process'е ждёт socket и chmod 666
+          # (по умолчанию owner root:root mode 660 — coder uid=1000
+          # не может писать). 666 в pod-internal emptyDir безопасно.
+          lifecycle:
+            postStart:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - "while [ ! -S /var/run/docker.sock ]; do sleep 0.5; done; chmod 666 /var/run/docker.sock"
           env:
             - name: DOCKER_TLS_CERTDIR
               value: ""                  # disable TLS auto-setup
@@ -88,7 +101,7 @@ spec:
             periodSeconds: 30
 
         - name: code-server
-          image: harbor.parsers360.ru:10443/ranepa/code-server:0.1.4
+          image: harbor.parsers360.ru:10443/ranepa/code-server:0.1.5
           imagePullPolicy: Always
           env:
             - name: APP_SLUG
