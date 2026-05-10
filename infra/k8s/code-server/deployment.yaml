@@ -54,7 +54,7 @@ spec:
 
       containers:
         - name: code-server
-          image: harbor.parsers360.ru:10443/ranepa/code-server:0.1.0
+          image: harbor.parsers360.ru:10443/ranepa/code-server:0.1.2
           imagePullPolicy: Always
           env:
             - name: APP_SLUG
@@ -80,9 +80,12 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /home/coder/work
+            # Claude OAuth-кред монтируется в /etc/claude-creds/, а start.sh
+            # копирует его в /home/coder/.claude/.credentials.json (rw, 600).
+            # Прямой mount subPath давал /home/coder/.claude/ root-owned →
+            # Claude не мог писать state-файлы и думал что это первый запуск.
             - name: claude-creds
-              mountPath: /home/coder/.claude/.credentials.json
-              subPath: credentials.json
+              mountPath: /etc/claude-creds
               readOnly: true
             - name: kubeconfig
               mountPath: /home/coder/.kube/config

@@ -22,6 +22,17 @@ set -e
 
 WORKDIR="/home/coder/work"
 
+# Copy Claude OAuth-кред из секрета (mount /etc/claude-creds, owner=root)
+# в ~/.claude/.credentials.json (writable, owner=coder). Иначе директория
+# /home/coder/.claude/ остаётся root-owned после k8s subPath mount, и
+# Claude Code не может писать туда state-файлы (последний-чек, статсиг,
+# session id) → ведёт себя так, будто это первый запуск, и просит /login.
+mkdir -p /home/coder/.claude
+if [[ -f /etc/claude-creds/credentials.json ]]; then
+  install -m 600 /etc/claude-creds/credentials.json /home/coder/.claude/.credentials.json
+  echo "==> Claude creds installed (subscriptionType=$(jq -r '.claudeAiOauth.subscriptionType' /home/coder/.claude/.credentials.json))"
+fi
+
 # 1. Стартуем sing-box в фоне для туннеля к api.anthropic.com.
 #    api.anthropic.com заблокирован из РФ; sing-box разворачивает
 #    inbound mixed на 127.0.0.1:1088 (одновременно SOCKS5 и HTTP).
