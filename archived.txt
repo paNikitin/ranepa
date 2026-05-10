@@ -1,0 +1,300 @@
+# Архив выполненных задач — ranepa
+#
+# Что в актуальном плане — см. todo.txt (только то, что осталось делать
+# и открытые вопросы). Здесь — то, что собрано и работает в проде.
+
+================================================================================
+КОНТЕКСТ (краткая выжимка из исходного todo)
+================================================================================
+
+Цель: универсальный шаблон вайбкодинг-мероприятия, где участники
+«через чат» (без терминала, без git, без Docker) собирают веб-эппу с
+iOS-look-and-feel и публикуют её на отдельном подпути базового домена.
+Первая инстанциация — РАНХиГС, домен ranepa.gigaparsers.ru, 5 слотов.
+
+Шаблон event-agnostic: имя домена, брендинг, число участников и слотов —
+переменные конфига. Для будущего мероприятия меняем секцию параметров +
+переименование ns/host.
+
+Архитектура зеркалит naisty-look:
+  - edge nginx (5.188.118.125 docker prom_nginx_1) терминирует TLS,
+    проксирует на traefik k3s 10.43.58.167:10443 с proxy_ssl_verify off;
+  - в кластере: ranepa (lending), ranepa-tools (code-server'ы),
+    ranepa-app1..5 (приложения участников);
+  - образы — Harbor harbor.parsers360.ru:10443/ranepa/*;
+  - traefik отдаёт self-signed на unknown SNI.
+
+Параметры РАНХиГС-инстанса (зафиксированы):
+  EVENT_NAME=ranepa  DOMAIN=ranepa.gigaparsers.ru  SLOTS=5
+  SLOT_PREFIX=app    NAMESPACE=ranepa             SLOT_NS=ranepa-app
+  TOOLS_NS=ranepa-tools   HARBOR_PROJ=ranepa      BRAND=РАНХиГС
+
+Решения по разветкам (q3-q5) приняты дефолтами:
+  q3 = React 19 + Vite 6 + TS strict + Tailwind 4 + минимальный stack-router
+  q4 = без бэкенда (LocalStorage; FastAPI/LiteLLM описаны в AGENTS.md
+       как опция «попроси агента включить»)
+  q5 = лендинг с N карточками на корне домена
+
+================================================================================
+ФАЗА 1. Edge-nginx + TLS на ranepa.gigaparsers.ru   ✓ DONE 2026-05-09
+================================================================================
+
+Что выяснилось:
+  - edge nginx в docker-контейнере `prom_nginx_1` (image paulnik/nginx:main),
+    порты 80/443 на хосте.
+  - compose-проект: /root/gigaparser/giga_parser/standalone/deploy/prom/
+  - монтирует с хоста: /etc/letsencrypt, /var/www/certbot.
+  - конфиги ВПЕЧЕНЫ в образ через COPY giga_parser/standalone/nginx/
+    nginx.conf → /etc/nginx/conf.d/default.conf, volume под conf.d НЕТ.
+  - certbot 2.9.0 на хосте, авторенью настроен.
+  - SSH ключ id_ed25519_new — БЕЗ passphrase. Пароль `rX37kTEjWESJsk3`
+    в этой сессии не понадобился.
+
+Что сделано:
+  [x] 1.1. Изучил docker-компоновку, mounts, source nginx.conf.
+  [x] 1.2. DNS: ranepa.gigaparsers.ru → 5.188.118.125 уже на месте.
+  [x] 1.3. Stage-1: положил минимальный HTTP-блок (acme-challenge) через
+           `docker cp` в /etc/nginx/conf.d/ranepa.gigaparsers.ru.conf
+           внутри контейнера + nginx -s reload.
+  [x] 1.4. certbot certonly --webroot -w /var/www/certbot
+                  -d ranepa.gigaparsers.ru
+                  --email admin@gigaparsers.ru
+           → серт выпущен, expires 2026-08-07.
+  [x] 1.5. Stage-2: scp полный конфиг (HTTP→HTTPS redirect + HTTPS server,
+           proxy_pass на traefik) → docker cp → nginx -t → nginx -s reload.
+           Канонический файл — infra/edge-nginx/ranepa.gigaparsers.ru.conf.
+  [x] 1.6. Verify: https://ranepa.gigaparsers.ru/ → 404 от traefik (ok).
+  [x] 1.7. Persist: на сервере в /root/gigaparser/giga_parser/standalone/
+           nginx/nginx.conf вмержены и naisty-look блоки (которые тоже
+           были drift'ом — кто-то клал через docker cp ранее), и наш
+           ranepa блок. Локальный коммит на сервере:
+             cd9182ea8 nginx: restore naisty-look + add ranepa server blocks
+           НЕ запушен — оставлено юзеру на review (push в
+           gitlab.parsers360.ru/gigaparsers/gigaparser).
+
+Дополнения позже: 2026-05-10 в edge-nginx добавлены WebSocket-headers
+(map $http_upgrade $connection_upgrade; proxy_set_header Upgrade/Connection;
+proxy_read_timeout/send_timeout 3600s) — нужно для ttyd web-terminal'ов.
+То же — нужно вмержить в исходный nginx.conf при следующей правке репы.
+
+================================================================================
+ФАЗА 1.5. VLESS+REALITY прокси для api.anthropic.com   ✓ DONE 2026-05-10
+================================================================================
+
+api.anthropic.com из РФ заблокирован, исходящий IP k3s-узлов получает 403
+от Anthropic'овской CDN. Решение:
+
+  - sing-box 1.10.7 запускается в каждом code-server pod'е;
+    разворачивает mixed inbound на 127.0.0.1:1088;
+    outbound — vless+reality (ключи из переданного юзером vless:// URL).
+  - start.sh export'ит HTTPS_PROXY=http://127.0.0.1:1088 + NO_PROXY на
+    внутренние сервисы (kube-api, .parsers360.ru, .gigaparsers.ru,
+    pod/svc CIDR'ы, edge nginx).
+  - Конфиг — k8s secret vless-config (key=config.json) в ns ranepa-tools.
+    Реальные ключи в репу НЕ коммитим — только шаблон
+    infra/code-server/sing-box.template.json с плейсхолдерами.
+
+  [x] sing-box добавлен в Dockerfile.
+  [x] start.sh запускает sing-box, ждёт inbound, выставляет proxy envs.
+  [x] deployment.yaml монтирует /etc/sing-box/config.json из секрета.
+  [x] sing-box.template.json в репе.
+  [x] README в infra/k8s/code-server/ с инструкцией заполнения шаблона.
+  [x] vless-config secret создан с ключами из vless:// URL юзера
+      (UUID/PBK/SID не светятся — конфиг локально создан в /tmp,
+      залит в k8s, файл удалён).
+
+================================================================================
+ФАЗА 2. Harbor + базовый k8s   ✓ DONE 2026-05-09/10
+================================================================================
+
+  [x] 2.1. Harbor project `ranepa` создан (project_id=18).
+  [x] 2.2. Robot $ranepa+ranepa-push с push+pull правами на проект.
+           Токен сохранён в k8s secret harbor-creds-ranepa в каждом ns.
+           (отдельный долг: записать в gitlab_setup/k3s_prod/
+            initial_deploy_sequence.sh когда будет доступ).
+  [x] 2.3. Namespaces: ranepa, ranepa-tools, ranepa-app1..5.
+           Манифест: infra/k8s/bootstrap/namespaces.yaml.
+  [x] 2.4. docker-registry secret harbor-creds-ranepa создан в каждом ns.
+  [x] 2.5. RBAC: ServiceAccount `deployer` + Role + RoleBinding +
+           долгоживущий token-secret в каждом ranepa-app<N>.
+           Манифест: infra/k8s/bootstrap/rbac-slot.yaml.
+           Скрипт генерации kubeconfig'ов:
+             infra/k8s/bootstrap/gen-kubeconfigs.sh
+           → /tmp/ranepa-kubeconfigs/app{1..5}.kubeconfig
+           Изоляция проверена: app1 → нет доступа к ranepa-app2,
+           к nodes, к namespaces.
+  [x] kubeconfig-app<N> secrets залиты в ranepa-tools.
+
+================================================================================
+ФАЗА 3 + 4 + 5. Шаблон + scripts + AGENTS.md   ✓ DONE 2026-05-09
+================================================================================
+
+В репе github.com/paNikitin/ranepa лежит:
+
+  app/
+    ├── public/{manifest.webmanifest, brand/favicon.svg, icons/...}
+    ├── src/
+    │   ├── App.tsx                 — switch по route
+    │   ├── main.tsx                — bootstrap React
+    │   ├── routes/{Home,List,Detail}.tsx  — 3 экрана-примера
+    │   ├── components/{Screen,Button,Card}.tsx
+    │   ├── lib/{router.ts, storage.ts}    — мини-роутер + LocalStorage
+    │   └── styles/{main.css, brand.css}   — Tailwind base + brand-токены
+    ├── index.html                  — iOS PWA meta, %BASE_URL%-префиксы
+    ├── vite.config.ts              — base: process.env.APP_BASE || '/'
+    ├── tsconfig.{json,app,node}.json
+    └── package.json                — React 19, Vite 6, TS 5.7, Tailwind 4
+
+  infra/
+    ├── edge-nginx/ranepa.gigaparsers.ru.conf  — server block для edge
+    ├── Dockerfile                   — multi-stage: vite build → nginx
+    ├── nginx.conf                   — SPA с try_files
+    ├── k8s/{deployment,service,ingress}.yaml  — шаблон с ${APP_SLUG}
+    ├── k8s/bootstrap/{namespaces,rbac-slot,gen-kubeconfigs}
+    ├── k8s/code-server/{deployment,service,ingress,README}.md
+    ├── k8s/landing/deployment.yaml
+    ├── code-server/{Dockerfile,start.sh,sing-box.template.json}
+    └── landing/{index.html,style.css,Dockerfile}
+
+  scripts/
+    ├── deploy.sh                    — build → harbor push → kubectl apply
+    └── reset.sh                     — git reset --hard origin/main
+
+  AGENTS.md, CLAUDE.md (симлинк), README.md, examples/prompts.md
+
+iOS-look базовые токены сделаны:
+  - viewport-fit=cover
+  - apple-mobile-web-app-capable=yes
+  - apple-mobile-web-app-status-bar-style=black-translucent
+  - apple-touch-icon (180×180)
+  - manifest.webmanifest (display=standalone, theme_color, icons)
+  - safe-area-inset-* utility-классы (pt-safe-top и т.п.)
+  - rounded-2xl, h-11 (≥44pt), system font stack
+  - dark mode по prefers-color-scheme через CSS-переменные брэнд-цветов
+
+Сборка проверена: APP_BASE=/app1/ npm run build → все пути префиксятся
+правильно (через %BASE_URL% в index.html).
+
+AGENTS.md описывает: что МОЖНО менять (app/src/), что НЕЛЬЗЯ (infra/,
+scripts/, vite.config.ts.base), как добавить экран/ручку, как деплоить,
+стиль кода, стиль общения с участником.
+
+================================================================================
+ФАЗА 6. Среда участника (code-server pod'ы)   ✓ DONE 2026-05-10
+================================================================================
+
+УПРОЩЕНИЕ vs первоначальный план: вместо code-server (VS Code в браузере) —
+ttyd с одним TUI-чатом. Участник видит ровно один интерфейс — диалог с
+Claude. Никакого VS Code, никакого shell. Доступ через подпуть, не
+поддомен: https://ranepa.gigaparsers.ru/dev/app<N>. Это убирает 5
+отдельных DNS-записей и сужает серт до одного домена.
+
+Образ infra/code-server/ — node 20-bookworm + docker-cli + kubectl + gh +
+git + ttyd 1.7.7 + sing-box 1.10.7 + Claude Code CLI. start.sh:
+
+  - копирует Claude OAuth кред из секрета в writable ~/.claude/
+    (без этого Claude думал что first-run и просил login);
+  - pre-seed'ит ~/.claude.json с hasCompletedOnboarding=true,
+    bypassPermissionsModeAccepted=true,
+    projects."/home/coder/work".hasTrustDialogAccepted=true,
+    hasCompletedProjectOnboarding=true (без них участник видел
+    welcome wizard и safety prompt'ы);
+  - монтирует .dockerconfigjson из harbor-creds в ~/.docker/config.json
+    (auto-login к Harbor, без интерактивного docker login);
+  - запускает sing-box bootstrap → kill → fresh restart (первый
+    sing-box после старта pod'а почему-то впадал в degraded state);
+  - sing-box с nohup + redirect + disown (иначе exec ttyd ломал stdio
+    sing-box'а после replacement bash → ttyd);
+  - ждёт DinD-сокет, делает `git fetch origin && reset --hard origin/main`,
+    запускает claude в TUI с --dangerously-skip-permissions.
+
+Манифесты infra/k8s/code-server/{deployment,service,ingress}.yaml:
+  - PVC 5Gi на /home/coder/work
+  - **DinD sidecar** (docker:27-dind, privileged, runAsUser=0,
+    --insecure-registry=harbor.parsers360.ru:10443) с emptyDir socket'ом;
+    postStart hook chmod'ит сокет 666 для coder uid=1000;
+  - mount: kubeconfig-app<N>, claude-credentials, harbor-creds-ranepa,
+    vless-config — все из k8s secrets;
+  - ingress на /dev/app<N> с traefik basic-auth + stripPrefix;
+  - WebSocket headers в edge nginx (Upgrade/Connection + 3600s timeouts).
+
+Что ещё пришлось диагностировать (история фиксов 0.1.0 → 0.1.7):
+  0.1.0 → first build, 403 от Anthropic
+  0.1.1 → попытка фикса stdio sing-box'а после exec ttyd
+  0.1.2 → bootstrap+restart sing-box (фикс degraded first handshake)
+          [ОКАЗАЛОСЬ ЛОЖНЫМ СЛЕДОМ — реальная причина 403 была в том,
+           что мои тесты через `kubectl exec` шли БЕЗ HTTPS_PROXY env
+           → Claude ходил напрямую с k3s-node IP, который Anthropic
+           режет; через ttyd (с правильным env от start.sh) всё
+           работало уже на 0.1.0]
+  0.1.3 → claude-credentials через subPath mount делал ~/.claude/
+          root-owned, Claude не мог писать state-файлы → welcome
+          screen. Фикс: mount в /etc/claude-creds, copy в writable
+          ~/.claude/ через start.sh
+  0.1.4 → pre-seed onboarding/trust флагов в ~/.claude.json
+  0.1.5 → DinD sidecar вместо host /var/run/docker.sock,
+          auto-Harbor-login через mounted .dockerconfigjson,
+          git fetch+pull --rebase на рестарте pod'а
+  0.1.6 → --insecure-registry для self-signed Harbor cert,
+          упрощённая git-логика (всегда main, hard reset),
+          понижены CPU requests (50m/128Mi) — узлы были насыщены
+  0.1.7 → claude --dangerously-skip-permissions (убирает prompt'ы
+          per edit/Bash, участник чисто чатится)
+
+Секреты в ns ranepa-tools (созданы вручную через kubectl create):
+  - claude-credentials (settings.json не нужен — OAuth-кредл из Keychain)
+  - kubeconfig-app{1..5}
+  - vless-config (sing-box JSON)
+  - code-server-auth-app{1..5} (htpasswd для basic-auth)
+  - harbor-creds-ranepa (тот же docker-registry secret)
+  - все имена basic-auth user'ов и пароли — в /tmp/ranepa-credentials.txt
+    на ноуте (не в репе).
+
+================================================================================
+ФАЗА 7. Лендинг ranepa.gigaparsers.ru/   ✓ DONE 2026-05-09
+================================================================================
+
+  [x] 7.1. Статический сайт infra/landing/ (index.html + style.css);
+           отдельный deployment ranepa-landing в ns ranepa.
+  [x] 7.2. 5 карточек с placeholder-именами «Участник 1..5».
+           Когда будут реальные имена — отредактировать infra/landing/
+           index.html, пересобрать образ landing:0.1.1, перекатить.
+  [x] 7.3. Ingress: ranepa.gigaparsers.ru/ → ranepa-landing-svc.
+           Подпути /app<N>/* и /dev/app<N>/* перехватывают ingress'ы
+           слотов раньше (PathType=Prefix).
+           Verify: curl -I https://ranepa.gigaparsers.ru/ → 200 OK.
+
+================================================================================
+ФАЗА 8.1. End-to-end smoke   ✓ DONE 2026-05-10
+================================================================================
+
+С каждого из 5 code-server pod'ов прогнан `APP_SLUG=app<N>
+KUBECONFIG=/home/coder/.kube/config ./scripts/deploy.sh`:
+  - docker build через DinD sidecar
+  - docker push в Harbor (через --insecure-registry)
+  - kubectl apply -n ranepa-app<N> (deployment + service + ingress
+    с traefik StripPrefix middleware)
+  - rollout status — успех
+
+Все 5 URL'ов отвечают 200:
+  https://ranepa.gigaparsers.ru/app1/ → 200
+  https://ranepa.gigaparsers.ru/app2/ → 200
+  https://ranepa.gigaparsers.ru/app3/ → 200
+  https://ranepa.gigaparsers.ru/app4/ → 200
+  https://ranepa.gigaparsers.ru/app5/ → 200
+
+Каждый отдаёт vite-собранный SPA с правильным /app<N>/-base в HTML.
+
+================================================================================
+УЧЁТНЫЕ ДАННЫЕ ДЛЯ РАЗДАЧИ (на ноуте, не в репе)
+================================================================================
+
+Логины basic-auth для code-server'ов — в /tmp/ranepa-credentials.txt:
+
+  app1  vHpuo7vXMQ62
+  app2  qMLQdtto4dSg
+  app3  77xdmaOzN1i9
+  app4  vttKZMEnXw6
+  app5  TyPN7edyfMeo
+
+Раздаются вместе с URL'ами вида https://ranepa.gigaparsers.ru/dev/app<N>/.

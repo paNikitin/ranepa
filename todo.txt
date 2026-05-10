@@ -1,490 +1,112 @@
-# План: универсальный шаблон вайбкодинг-мероприятия
+# Активный план: ranepa
 #
-# Цель: дать участникам мероприятия (преподаватели, студенты, сотрудники
-# компании, клуб энтузиастов — кто угодно) инструмент, чтобы они «через
-# чат» (без терминала, без git, без Docker) собрали себе веб-эппу с
-# iOS-look-and-feel и опубликовали её на отдельном подпути базового
-# домена мероприятия.
-#
-# Шаблон event-agnostic: имя домена, брендинг, число участников,
-# названия слотов — переменные конфига. Первая инстанциация — для
-# РАНХиГС: домен ranepa.gigaparsers.ru, 5 участников, бренд РАНХиГС.
-#
-# Ключевая особенность (зафиксировано после уточнений):
-#   ▸ участник взаимодействует ТОЛЬКО с чатом ИИ-агента;
-#   ▸ агент сам клонирует шаблон, правит код, билдит, пушит в Harbor,
-#     делает kubectl apply, отвечает «готово, см. <url>»;
-#   ▸ репозиторий — публичный GitHub юзера,
-#     там лежит шаблон + инструкции для агента (AGENTS.md/CLAUDE.md);
-#   ▸ один шаблон → N веток (по одной на участника).
-#
-# Архитектурно зеркалим naisty-look:
-#   - edge nginx (5.188.118.125) терминирует TLS, проксирует на traefik k3s;
-#   - в кластере namespace ranepa + ranepa-app1..N для приложений;
-#   - образы в Harbor harbor.parsers360.ru:10443/ranepa/...;
-#   - traefik отдаёт self-signed на unknown SNI, edge nginx проксирует
-#     с proxy_ssl_verify off (паттерн naisty-look).
+# Что уже собрано и работает в проде — см. archived.txt.
+# Здесь — только то, что ещё нужно сделать перед мероприятием.
 
 ================================================================================
-ТЕРМИНОЛОГИЯ
+СОСТОЯНИЕ НА 2026-05-10
 ================================================================================
 
-«участник»     — человек, который вайбкодит свою эппу через чат с агентом
-                 (synonym: автор приложения; в РАНХиГС-инстансе — профессор)
-«агент»        — Claude Code, живущий в дев-контейнере на стороне сервера
-«слот»         — заранее выделенный namespace + подпуть + dev-pod под одного
-                 участника. Идентификатор слота — APP_SLUG (app1, app2, ...)
-«мероприятие» — конкретный деплой (для РАНХиГС: домен ranepa.gigaparsers.ru,
-                 5 слотов, бренд РАНХиГС)
+Инфра целиком жива:
+  - https://ranepa.gigaparsers.ru/         → лендинг (200, 5 карточек)
+  - https://ranepa.gigaparsers.ru/app1..5/ → шаблон-эпп каждого слота (200)
+  - https://ranepa.gigaparsers.ru/dev/app1..5/ → ttyd с Claude
+    (basic-auth, --dangerously-skip-permissions, VLESS-туннель)
+
+End-to-end проверено: с каждого code-server pod'а scripts/deploy.sh
+успешно собирает (DinD), пушит в Harbor (--insecure-registry для
+self-signed), делает kubectl apply в свой ns (RBAC изолирует слоты).
 
 ================================================================================
-ОТВЕТЫ ЮЗЕРА (зафиксировано 2026-05-09)
+ОТКРЫТЫЕ ВОПРОСЫ К ЮЗЕРУ
 ================================================================================
 
-u1. `rX37kTEjWESJsk3` = пароль для доступа к серверу 5.188.118.125.
-    SSH ключ id_ed25519_new работает БЕЗ passphrase, в этой сессии
-    пароль не понадобился (видимо, fallback root pwd).
+[ ] u9.  Брендбук РАНХиГС — если есть PDF/гайд, прислать. Иначе возьму
+         публичные цвета с ranepa.ru и дефолтный шрифт.
+         Применяется правкой одного слоя — app/src/styles/brand.css +
+         public/brand/{favicon.svg,apple-touch-icon.png}; никакого
+         кода-перетряхивания.
 
-u2. 5 участников в первом мероприятии (РАНХиГС). Мульти-тенант — в
-    масштабе ветка-на-участника, не SaaS.
+[ ] u13. Имена/email/Telegram 5 участников РАНХиГС — нужны для:
+         а) подписей на лендинге (сейчас «Участник 1..5» placeholder);
+         б) понять кому какой APP_SLUG/пароль раздать.
 
-u3. Уровень: «общаются только с чатом». Терминал, git, vite, docker —
-    участники не открывают. Вся CI/CD цепочка — на стороне агента.
-
-u4. Брендинг — параметр конфига. Для РАНХиГС-инстанса возьмём цвета
-    с ranepa.ru или брендбук от заказчика; для других мероприятий —
-    свой.
-
-u5. Репозиторий — github.com/paNikitin/ranepa (публичный, уже создан,
-    клонирован в /Users/paulnik/Downloads/ranepa). Туда грузим:
-      - шаблон приложения (frontend + опционально backend),
-      - AGENTS.md/CLAUDE.md — спека работы для агента,
-      - infra/ — k8s манифесты + nginx-конфиги,
-      - examples/prompts.md — стартовые промпты.
-    Каждому участнику — свой branch app<N> в этом репо.
-
-u6. Агент-кодер живёт в дев-контейнере (code-server в кластере),
-    участник обращается через браузер на app<N>-dev.<домен>.
-
-u7. Изоляция через подпути: ranepa.gigaparsers.ru/app1 … /app5.
-    Один TLS-серт, один server-блок в edge-nginx, один ingress-host.
-    vite base из env APP_BASE = /app<N>/.
-
-u8. Имя репы: github.com/paNikitin/ranepa.git (см. u5).
-
-u11. OAuth-токен Claude — НЕ нужен новый, юзер логинится в свой
-     Claude.ai-аккаунт через `claude /login` (OAuth-флоу). Кредл
-     складывается в ~/.claude/.credentials.json и монтируется
-     секретом во все 5 code-server-pod'ов (read-only).
-
-u12. План подписки — Max 5x. Лимитов хватит на 5 одновременных
-     участников на 1-2 часовое мероприятие. API-ключ как fallback
-     готовить не нужно; если упрёмся — временно поднять до Max 20x.
+[ ] u14. Дата мероприятия. Сейчас всё работает; перед событием полезно
+         будет провести dry-run с одним «фейковым» участником
+         (см. остатки фазы 8) и понять остаётся ли запас по Max 5x
+         лимитам OAuth.
 
 ================================================================================
-ПАРАМЕТРЫ КОНКРЕТНОГО МЕРОПРИЯТИЯ (РАНХиГС)
+ОСТАЛОСЬ СДЕЛАТЬ
 ================================================================================
 
-EVENT_NAME    = ranepa
-DOMAIN        = ranepa.gigaparsers.ru
-SLOTS         = 5
-SLOT_PREFIX   = app          # app1..app5
-NAMESPACE     = ranepa       # для лендинга
-SLOT_NS       = ranepa-app   # ranepa-app1..ranepa-app5
-TOOLS_NS      = ranepa-tools # code-server'ы
-HARBOR_PROJ   = ranepa       # harbor.parsers360.ru:10443/ranepa/*
-BRAND         = РАНХиГС      # цвета/лого/шрифт — отдельный конфиг
+[ ] L1. Лендинг — подменить placeholder-имена на реальные участников
+        (после получения списка от u13).
+        Файл: infra/landing/index.html (5 карточек).
+        Деплой: docker build → push landing:0.1.1 → kubectl set image
+                deploy/ranepa-landing landing=...:0.1.1 -n ranepa.
 
-(значения зафиксированы для текущего деплоя; для будущих мероприятий —
-поменять одну секцию + переименовать ns/host)
+[ ] L2. Брендинг шаблона — РАНХиГС цвета/лого/шрифт
+        (после u9). Файлы:
+          app/src/styles/brand.css — переменные --brand-primary и др.
+          app/public/brand/favicon.svg, apple-touch-icon.png
+          app/index.html — title, apple-mobile-web-app-title
+          app/public/manifest.webmanifest — name, theme_color
+        После правки — git push, code-server'ы при рестарте pull'нут;
+        каждый участник передеплоит из своей сессии.
 
-================================================================================
-ОТКРЫТЫЕ ОБЩИЕ РАЗВИЛКИ
-================================================================================
+[ ] L3. nginx persist на сервере — запушить локальный коммит cd9182ea8
+        в gigaparser-репозитории (gitlab.parsers360.ru/gigaparsers/
+        gigaparser) после ревью. Без этого следующий rebuild edge-nginx
+        потеряет наш ranepa-блок и WS-headers (хотя в текущем
+        runtime'е всё работает через docker cp + nginx -s reload).
+        Тоже — там вмержен naisty-look блок, который тоже был drift'ом.
 
-[?] q3. Стек шаблона
-        А) React + Vite + TS + Tailwind. Дефолт.
-        Б) Svelte 5 + TS — как naisty-look, переиспользуем 1-в-1.
-        В) Vanilla HTML + Alpine.js — нулевой порог входа для агента,
-           но ограничивает сложность.
-        Дефолт — А (React + Vite + TS + Tailwind). Claude в 2026 пишет
-        этот стек идиоматично без подсказок, и он самый
-        AI-агент-friendly из перечисленных.
-
-[?] q4. Бэкенд
-        А) Без бэкенда. Только LocalStorage + статика. Достаточно
-           для 90% «учебных» эппов (опросник, чек-лист, словарь).
-        Б) Минимальный FastAPI с /api/echo, без БД. Участник может
-           попросить агента «добавь ручку для X» — агент допишет.
-        В) FastAPI + LiteLLM — даём ИИ-чат-ручку «из коробки» (через
-           litellm.openclaw.svc, как у naisty-look). Участник может
-           за 10 минут сделать «помощник по моему курсу».
-        Дефолт — А для шаблона, опция В описана в AGENTS.md
-        («попроси агента включить ИИ-чат — он добавит /api/ai/chat»).
-        Бэкенд лишний для большинства эпп, и его отсутствие
-        упрощает деплой (просто статика-в-nginx, no PVC).
-
-[?] q5. Что выкладываем на корень <домен>/
-        А) Лендинг мероприятия: список карточек участников с кнопкой
-           «открыть приложение» на /app1 … /appN. Минимум час работы.
-        Б) Просто redirect на /info или 404. Корень не нужен.
-        Дефолт — А, лендинг.
+[ ] L4. Harbor robot token — записать в
+        gitlab_setup/k3s_prod/initial_deploy_sequence.sh рядом с другими
+        push-роботами (подобно look-bot). Сейчас токен живёт только
+        в k8s secret harbor-creds-ranepa в наших ns'ах.
 
 ================================================================================
-АРХИТЕКТУРА ИНСТАНСОВ УЧАСТНИКОВ
+ФАЗА 8 — оставшиеся пункты тестового прогона
 ================================================================================
 
-   ┌──────────────────────────────────────────────────┐
-   │  GitHub: github.com/paNikitin/ranepa             │
-   │  - main: канонический шаблон                     │
-   │  - branches: app1 … app5 (по одной на участника) │
-   └──────────────────────────────────────────────────┘
-                       │ git clone (deploy key)
-                       ▼
-   ┌──────────────────────────────────────────────────┐
-   │  k8s ns ranepa-tools                             │
-   │  - 5 dev-pod'ов code-server-app1…app5            │
-   │    каждый: Node, Claude Code, docker (rootless), │
-   │    kubectl с RBAC только на ranepa-app<N>,       │
-   │    Harbor robot$ranepa+push, ssh-key для git push│
-   │  - доступ: app<N>-dev.ranepa.gigaparsers.ru      │
-   │    с базовой авторизацией (basic auth / oauth2-  │
-   │    proxy + список email участников)              │
-   └──────────────────────────────────────────────────┘
-                       │ docker build → harbor push
-                       │ kubectl apply -n ranepa-app<N>
-                       ▼
-   ┌──────────────────────────────────────────────────┐
-   │  k8s ns ranepa-app<N>                            │
-   │  - deployment: ranepa-app:<sha>                  │
-   │  - svc, ingress на ranepa.gigaparsers.ru/app<N>  │
-   └──────────────────────────────────────────────────┘
-                       │
-                       ▼
-   ┌──────────────────────────────────────────────────┐
-   │  Лендинг: ranepa.gigaparsers.ru/                 │
-   │  - 5 карточек: «приложение <Имя участника>»      │
-   │  - билд-статус, последний коммит                 │
-   └──────────────────────────────────────────────────┘
+[ ] 8.2. Lighthouse mobile с iPhone Safari: PWA ≥ 90, Performance ≥ 90.
+        Запустить хотя бы для одного слота после брендинга.
+
+[ ] 8.3. «Поделиться → На экран Домой» с iPhone — иконка должна быть
+        правильная (apple-touch-icon), запуск в standalone (без
+        адресной строки).
+
+[ ] 8.4. Прогнать сценарий «AI всё сломал» → попросить агента в чате
+        вернуть всё к шаблону → агент запускает scripts/reset.sh
+        → перерождение.
+
+[ ] 8.5. Прогнать промпты из examples/prompts.md по списку — убедиться
+        что каждый разворачивается во что-то осмысленное (без правок
+        промптов).
 
 ================================================================================
-ФАЗЫ
+ОПЦИОНАЛЬНО (НЕ блокирует мероприятие)
 ================================================================================
 
-ФАЗА 0. Подготовка
-─────────────────────────────────────────────────────────────────────
+[ ] OPT1. Per-slot custom URL'ы (если u13 даст имена участников —
+          можно вместо app1..5 называть слоты по фамилиям, например
+          /ivanov, /petrov; потребует перегенерации серта только если
+          переехать на поддомены).
 
-[ ] 0.1. Подтвердить дефолты по q3-q5.
-[x] 0.2. Создан публичный github.com/paNikitin/ranepa.
-[ ] 0.3. Получить от юзера:
-        - брендбук (логотип + 2-3 цвета + шрифт), если есть;
-        - имена/email/Telegram участников (для basic-auth и подписей).
+[ ] OPT2. Лимит токенов на слот (защита от случайной бесконечной
+          итерации claude). Можно через настройку
+          ANTHROPIC_RATE_LIMIT или через monitoring + автоматический
+          kill-switch если usage > N tokens/час.
 
-ФАЗА 1.5. VLESS+REALITY прокси для api.anthropic.com   ✓ DONE 2026-05-10
-─────────────────────────────────────────────────────────────────────
+[ ] OPT3. Тёплый кэш npm install / docker layers — сейчас при первом
+          deploy.sh каждый pod скачивает ~150Mb npm + базовые слои.
+          Можно подложить .npmrc с локальным registry или nexus-mirror.
 
-api.anthropic.com из РФ заблокирован. Code-server-pod'ы участников
-не смогут говорить с Claude API напрямую. Решение:
-
-  - sing-box запускается в каждом code-server pod'е (см. start.sh),
-    разворачивает mixed inbound на 127.0.0.1:1088,
-    outbound — vless+reality (через переданный юзером vless:// URL).
-  - Перед запуском start.sh export'ит HTTPS_PROXY=http://127.0.0.1:1088
-    + NO_PROXY на внутренние сервисы (kube-api, .parsers360.ru,
-    .gigaparsers.ru, pod/svc CIDR'ы, edge nginx).
-  - Конфиг sing-box приходит как k8s secret vless-config
-    (key=config.json) в ns ranepa-tools. Реальные ключи в репу
-    НЕ коммитим — только шаблон infra/code-server/sing-box.template.json.
-
-Что сделано:
-  [x] sing-box добавлен в Dockerfile code-server'а.
-  [x] start.sh запускает sing-box, ждёт inbound, выставляет proxy envs.
-  [x] deployment.yaml монтирует /etc/sing-box/config.json из секрета.
-  [x] sing-box.template.json в репе с плейсхолдерами для UUID/PBK/SID.
-  [x] README обновлён инструкцией заполнения и создания секрета.
-
-ОСТАЛОСЬ:
-  [ ] Заполнить шаблон значениями из vless:// URL юзера и
-      `kubectl -n ranepa-tools create secret generic vless-config
-       --from-file=config.json=/tmp/sing-box.json` (после ребилда
-      code-server образа).
-
-ФАЗА 1. Edge-nginx + TLS на ranepa.gigaparsers.ru   ✓ DONE 2026-05-09
-─────────────────────────────────────────────────────────────────────
-
-Что выяснилось:
-  - edge nginx живёт в docker-контейнере `prom_nginx_1`
-    (image paulnik/nginx:main), порты 80/443 на хосте.
-  - compose-проект: /root/gigaparser/giga_parser/standalone/deploy/prom/
-  - монтирует с хоста: /etc/letsencrypt, /var/www/certbot.
-  - конфиги nginx ВПЕЧЁНЫ в образ (COPY giga_parser/standalone/nginx/
-    nginx.conf → /etc/nginx/conf.d/default.conf), volume под conf.d НЕТ.
-  - certbot 2.9.0 на хосте, авторенью настроен.
-  - SSH ключ id_ed25519_new — БЕЗ passphrase. Пароль `rX37kTEjWESJsk3`
-    в этой сессии не понадобился; видимо, fallback root pwd.
-
-Что сделано:
-  [x] 1.1. Изучил docker-компоновку, mounts, source nginx.conf.
-  [x] 1.2. DNS: ranepa.gigaparsers.ru → 5.188.118.125 уже на месте.
-  [x] 1.3. Stage-1: положил минимальный HTTP-блок (только acme-challenge)
-           через `docker cp` в /etc/nginx/conf.d/ranepa.gigaparsers.ru.conf
-           внутри контейнера + `nginx -s reload`.
-  [x] 1.4. certbot certonly --webroot -w /var/www/certbot
-                 -d ranepa.gigaparsers.ru
-                 --email admin@gigaparsers.ru
-           → серт выпущен, expires 2026-08-07.
-  [x] 1.5. Stage-2: scp полный конфиг (HTTP→HTTPS redirect + HTTPS server,
-           proxy_pass на traefik 10.43.58.167:10443) → docker cp →
-           nginx -t → nginx -s reload. Канонический файл лежит в
-           infra/edge-nginx/ranepa.gigaparsers.ru.conf.
-  [x] 1.6. Verify:
-             curl -I https://ranepa.gigaparsers.ru/  →  404 от traefik (ok)
-             curl -I http://ranepa.gigaparsers.ru/   →  307 на https (ok)
-
-ОСТАВШИЙСЯ ДОЛГ ПО NGINX:
-
-  [x] 1.7. Persist: на сервере в /root/gigaparser/giga_parser/standalone/
-           nginx/nginx.conf вмержены и naisty-look блоки (которые тоже
-           были drift'ом — кто-то клал через docker cp ранее), и наш
-           ranepa блок. Локальный коммит на сервере:
-             cd9182ea8 nginx: restore naisty-look + add ranepa server blocks
-           НЕ запушен — оставлено юзеру на review (push в
-           gitlab.parsers360.ru/gigaparsers/gigaparser).
-
-ФАЗА 2. Harbor + базовый k8s   ✓ DONE 2026-05-09
-─────────────────────────────────────────────────────────────────────
-
-  [x] 2.1. Harbor project `ranepa` создан (project_id=18).
-  [x] 2.2. Robot $ranepa+ranepa-push с push+pull правами на проект.
-           Токен: 5EfiFE9aVKckilQ0kSwMfvmf6SWX2oed
-           (обновить в gitlab_setup/k3s_prod/initial_deploy_sequence.sh
-           когда будет доступ).
-  [x] 2.3. Namespaces созданы:
-             ranepa, ranepa-tools, ranepa-app1..5
-           Манифест: infra/k8s/bootstrap/namespaces.yaml.
-  [x] 2.4. docker-registry secret harbor-creds-ranepa создан в каждом ns
-           (kubectl create secret docker-registry).
-  [x] 2.5. RBAC: ServiceAccount `deployer` + Role + RoleBinding +
-           долгоживущий token-secret в каждом ranepa-app<N>.
-           Манифест: infra/k8s/bootstrap/rbac-slot.yaml.
-           Скрипт генерации kubeconfig'ов:
-             infra/k8s/bootstrap/gen-kubeconfigs.sh
-           → /tmp/ranepa-kubeconfigs/app{1..5}.kubeconfig
-           Изоляция проверена: app1 → нет доступа к ranepa-app2,
-           к nodes, к namespaces.
-
-           ОСТАЛОСЬ: залить kubeconfig'и в code-server pod'ы как
-           k8s secret kubeconfig-app<N> в ns ranepa-tools (см. ФАЗА 6).
-
-ФАЗА 3. Шаблон-приложения (содержимое github.com/paNikitin/ranepa)
-─────────────────────────────────────────────────────────────────────
-
-(Стек q3=А: Vite + React + TS + Tailwind; q4=А: без бэкенда)
-
-[ ] 3.1. Структура репы:
-        ranepa/
-        ├── app/                    # Vite + React + TS + Tailwind
-        │   ├── public/
-        │   │   ├── apple-touch-icon.png
-        │   │   ├── manifest.webmanifest
-        │   │   └── icons/
-        │   ├── src/
-        │   │   ├── App.tsx
-        │   │   ├── main.tsx
-        │   │   ├── routes/         # 3 примера: Home, List, Detail
-        │   │   ├── components/
-        │   │   ├── lib/
-        │   │   └── styles/
-        │   ├── index.html
-        │   ├── vite.config.ts      # base: env.APP_BASE || '/'
-        │   ├── tailwind.config.ts
-        │   ├── package.json
-        │   └── tsconfig.json
-        ├── infra/
-        │   ├── edge-nginx/
-        │   │   └── ranepa.gigaparsers.ru.conf  # ✓ уже есть
-        │   ├── Dockerfile          # копия look-bot-miniapp
-        │   ├── nginx.conf          # SPA + try_files
-        │   └── k8s/
-        │       ├── deployment.yaml
-        │       ├── service.yaml
-        │       └── ingress.yaml    # шаблон с {{APP_SLUG}}
-        ├── scripts/
-        │   ├── deploy.sh           # build → push → kubectl apply
-        │   └── reset.sh            # вернуть «как было»
-        ├── AGENTS.md               # спека для агента (см. фазу 5)
-        ├── CLAUDE.md               # симлинк на AGENTS.md
-        ├── README.md               # для участника, на русском
-        └── examples/
-            └── prompts.md          # 10-15 готовых промптов
-
-[ ] 3.2. iOS-look базовые токены:
-        - <meta viewport=...,viewport-fit=cover>
-        - apple-mobile-web-app-capable=yes
-        - apple-mobile-web-app-status-bar-style=black-translucent
-        - apple-touch-icon (180×180)
-        - manifest.webmanifest (display=standalone, theme_color, icons 192/512)
-        - safe-area-inset-* в Tailwind через arbitrary values
-        - rounded-2xl, тапаемые ≥44pt, system font stack
-        - dark mode по prefers-color-scheme
-
-[ ] 3.3. Три скрин-примера, все паттерны мини-эпы:
-        - HomeScreen: hero + кнопка → переход;
-        - ListScreen: грид/лист карточек + tap → детали;
-        - DetailScreen: форма + textarea → сохранить в LocalStorage.
-        Цель — чтобы агент копировал и подменял содержимое.
-
-[ ] 3.4. vite.config.ts — base: process.env.APP_BASE || '/'.
-        В Dockerfile: ARG APP_BASE → npm run build с правильным base.
-        В deployment.yaml: ARG прокидывается из CI/скрипта.
-
-[ ] 3.5. Брендинг — отдельный слой:
-        - app/src/styles/brand.css — переменные (--brand-primary,
-          --brand-accent, --brand-font);
-        - public/brand/logo.svg, favicon.svg;
-        - один файл brand.config.ts с именем мероприятия и слоганом.
-        Для РАНХиГС-инстанса значения подставим перед мероприятием.
-
-ФАЗА 4. Скрипт деплоя (то, что вызывает агент)
-─────────────────────────────────────────────────────────────────────
-
-[ ] 4.1. scripts/deploy.sh:
-        export APP_SLUG=app1
-        export VERSION=$(git rev-parse --short HEAD)
-        docker build \
-          --build-arg APP_BASE=/$APP_SLUG/ \
-          -t harbor.parsers360.ru:10443/ranepa/$APP_SLUG:$VERSION .
-        docker push harbor.parsers360.ru:10443/ranepa/$APP_SLUG:$VERSION
-        envsubst < infra/k8s/deployment.yaml | kubectl apply -n ranepa-$APP_SLUG -f -
-        kubectl -n ranepa-$APP_SLUG rollout status deploy/ranepa-app
-
-[ ] 4.2. scripts/reset.sh: git fetch origin && git reset --hard origin/main
-        (для случая «AI всё сломал»).
-
-[ ] 4.3. Все скрипты должны быть idempotent и читаемые — агент будет
-        их вызывать, не редактируя.
-
-ФАЗА 5. AGENTS.md — спека работы агента (КЛЮЧЕВОЙ ФАЙЛ)
-─────────────────────────────────────────────────────────────────────
-
-[ ] 5.1. Раздел «Что это за репозиторий»
-        - Назначение, аудитория (участник без терминала),
-          обязательства агента (после каждой правки — задеплоить и
-          ответить ссылкой).
-
-[ ] 5.2. Раздел «Архитектура»
-        - Где код приложения (app/src/).
-        - Где НЕ ТРОГАТЬ без явной просьбы (infra/, scripts/,
-          vite.config.ts base, Dockerfile, k8s/*).
-        - Где живут переменные окружения (.env.local).
-
-[ ] 5.3. Раздел «Как добавить новый экран» — пошагово, c кодом.
-
-[ ] 5.4. Раздел «Как добавить ручку API» — заглушка, для случая
-        если участник попросит бэкенд (агент сам поднимет
-        FastAPI-каркас по инструкции).
-
-[ ] 5.5. Раздел «Как задеплоить» — ровно одна команда:
-          APP_SLUG=$APP_SLUG ./scripts/deploy.sh
-        + что делать, если упало (kubectl logs, kubectl describe).
-
-[ ] 5.6. Раздел «Стиль кода»
-        - TypeScript строгий, без any;
-        - компоненты ≤ 200 строк;
-        - Tailwind, без inline-стилей;
-        - не ломать структуру папок.
-
-[ ] 5.7. Раздел «Стиль общения с участником»
-        - Русский язык;
-        - не задавать технических вопросов («какой PostgreSQL?»),
-          выбирать дефолты сам;
-        - после деплоя — давать ссылку на превью + что изменилось;
-        - если запрос неоднозначный — переспросить ОДИН раз
-          в категориях «функция / визуал / содержание».
-
-ФАЗА 6. Среда участника (code-server в кластере)
-─────────────────────────────────────────────────────────────────────
-
-УПРОЩЕНИЕ: вместо code-server (VS Code в браузере) — ttyd с одним
-TUI-чатом. Участник видит ровно один интерфейс — диалог с Claude.
-Никакого VS Code, никакого shell. Доступ через подпуть, не поддомен:
-  https://ranepa.gigaparsers.ru/dev/app<N>
-Это убирает 5 отдельных DNS-записей и сужает серт до одного домена.
-
-  [x] 6.1. Dockerfile infra/code-server/Dockerfile:
-           node 20-bookworm + docker-cli + kubectl + gh + git +
-           Claude Code CLI + ttyd 1.7. Стартовый скрипт start.sh
-           делает первичный clone репы, переключается на ветку
-           app<N>, запускает `claude` под ttyd.
-
-  [x] 6.2. Манифесты infra/k8s/code-server/{deployment,service,ingress}.yaml
-           - PVC 5Gi на /home/coder/work
-           - mount: docker.sock хоста, kubeconfig слота, claude credentials
-           - traefik basic-auth + stripPrefix /dev/app<N>
-
-  [ ] 6.3. ОСТАЛОСЬ собрать и запушить образ (требует docker login,
-           уже сделан этой сессией):
-             docker build --platform linux/amd64 \
-               -t harbor.parsers360.ru:10443/ranepa/code-server:0.1.0 \
-               -f infra/code-server/Dockerfile .
-             docker push harbor.parsers360.ru:10443/ranepa/code-server:0.1.0
-
-  [ ] 6.4. ОСТАЛОСЬ создать секреты в ns ranepa-tools:
-           а) claude-credentials — копия ~/.claude/.credentials.json
-              после `claude /login` под Max 5x аккаунтом;
-           б) kubeconfig-app<N> — из /tmp/ranepa-kubeconfigs/app<N>.kubeconfig;
-           в) code-server-auth-app<N> — htpasswd для basic-auth;
-           г) vless-config — sing-box JSON с заполненными UUID/PBK/SID
-              из переданного юзером vless:// URL (см. ФАЗА 1.5 ниже).
-           Команды — в infra/k8s/code-server/README.md.
-
-  [ ] 6.5. Применить манифесты для всех 5 слотов через envsubst
-           (см. README в той же папке).
-
-  [ ] 6.6. Раздать 5 ссылок + паролей участникам.
-
-ФАЗА 7. Лендинг ranepa.gigaparsers.ru/   ✓ DONE 2026-05-09
-─────────────────────────────────────────────────────────────────────
-
-  [x] 7.1. Статический сайт infra/landing/ (index.html + style.css),
-           отдельный deployment ranepa-landing в ns ranepa.
-  [x] 7.2. 5 карточек с placeholder-именами «Участник 1..5».
-           Когда будут реальные имена — отредактировать infra/landing/
-           index.html, пересобрать образ landing:0.1.1, перекатить.
-           Билд-статус не делал — overengineering.
-  [x] 7.3. Ingress: ranepa.gigaparsers.ru/ → ranepa-landing-svc.
-           Подпути /app<N>/* и /dev/app<N>/* перехватывают ingress'ы
-           слотов раньше (PathType=Prefix конкуренция).
-           Проверено: curl -I https://ranepa.gigaparsers.ru/ → 200 OK.
-
-ФАЗА 8. Тестовый прогон
-─────────────────────────────────────────────────────────────────────
-
-[ ] 8.1. От лица «фейкового участника» открыть код-сервер,
-        написать промпт «сделай экран приветствия с моим именем»,
-        дождаться деплоя, открыть https://ranepa.gigaparsers.ru/app1
-        с iPhone Safari.
-[ ] 8.2. Lighthouse mobile: PWA ≥ 90, Performance ≥ 90.
-[ ] 8.3. Проверить «Поделиться → На экран Домой» — иконка + full-screen.
-[ ] 8.4. Прогнать сценарий «AI сломал» → reset.sh → всё ок.
-[ ] 8.5. Прогнать промпты из examples/prompts.md по списку.
-
-================================================================================
-ОТКРЫТЫЕ ВОПРОСЫ — нужны ответы юзера
-================================================================================
-
-[ ] u9. Брендбук — если есть PDF/гайд для РАНХиГС, прислать. Иначе
-        возьму публичные цвета с ranepa.ru и дефолтный шрифт.
-        (Брендинг — отдельный слой, см. п.3.5; для других мероприятий
-        он перенастраивается без правки кода.)
-
-[ ] u10. Лендинг (q5): нужен ли он на корне ranepa.gigaparsers.ru/
-         с N карточками участников, или просто N независимых подпутей
-         и пустой корень? Дефолт — да, нужен лендинг.
-
-[ ] u13. Имена/email/Telegram участников РАНХиГС — нужны для basic-auth
-         доступа к app<N>-dev.ranepa.gigaparsers.ru и для подписей
-         на лендинге.
-
-[ ] u14. Дата мероприятия — чтобы понимать дедлайн на готовность
-         всей инфры (nginx, k8s, лендинг, N code-server'ов, шаблон).
+[ ] OPT4. Backup текущего состояния каждого слота в git перед
+          deploy.sh — чтобы при рестарте pod'а (когда git reset --hard
+          стирает несохранённое) можно было вернуться.
+          Сейчас deploy.sh + commit'ы участника нет — изменения живут
+          только в Harbor-образе, не в git. Это намеренно, но при
+          желании можно добавить.
