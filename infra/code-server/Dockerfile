@@ -55,7 +55,10 @@ RUN npm install -g @anthropic-ai/claude-code
 
 # Пользователь без root-прав. UID 1000 совпадает с типичным
 # host docker.sock (если хост — debian/ubuntu сервер).
-RUN useradd -m -u 1000 -s /bin/bash coder \
+# В node:20-bookworm уже есть user `node` с uid 1000 — убираем его
+# чтобы освободить uid и не плодить путаницу.
+RUN userdel -r node 2>/dev/null || true \
+    && useradd -m -u 1000 -s /bin/bash coder \
     && echo "coder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/coder
 
 USER coder
