@@ -177,4 +177,4 @@ exec ttyd \
   --writable \
   -t titleFixed="Slot ${APP_SLUG}" \
   -t fontSize=16 \
-  -- bash -lc "cd $WORKDIR && claude"
+  -- bash -lc "cd $WORKDIR && claude --dangerously-skip-permissions"
