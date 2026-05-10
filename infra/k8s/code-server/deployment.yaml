@@ -61,6 +61,12 @@ spec:
               value: "${APP_SLUG}"
             - name: HOME
               value: "/home/coder"
+            # Гасим non-essential telemetry/device-fingerprint trafic.
+            # Без этого Anthropic с hosting-IP даёт 403 Request not allowed
+            # на любой запрос (даже с валидным OAuth-токеном Max 5x).
+            # На macOS у юзера эта переменная стоит и всё работает.
+            - name: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
+              value: "1"
           ports:
             - name: ttyd
               containerPort: 7681

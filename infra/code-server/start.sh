@@ -27,9 +27,19 @@ WORKDIR="/home/coder/work"
 #    inbound mixed на 127.0.0.1:1088 (одновременно SOCKS5 и HTTP).
 #    Outbound — vless+reality, конфиг приходит через k8s secret.
 if [[ -f /etc/sing-box/config.json ]]; then
-  sing-box check -c /etc/sing-box/config.json
-  sing-box run -c /etc/sing-box/config.json &
+  mkdir -p /tmp/sb
+  cp /etc/sing-box/config.json /tmp/sb/config.json
+  sing-box check -c /tmp/sb/config.json
+
+  # ВАЖНО: stdout/stderr sing-box'а нужно редиректить в файл и
+  # disown'ить. Иначе после `exec ttyd` (ниже) ttyd заменяет
+  # process'у stdout/stderr → у sing-box'а закрываются дескрипторы
+  # → во время мультиплекс-операций он входит в degraded state и
+  # все TLS-туннели начинают возвращать 403 от Anthropic. Полная
+  # отвязка через nohup + редирект → выживает после exec.
+  nohup sing-box run -c /tmp/sb/config.json > /tmp/sing-box.log 2>&1 &
   SB_PID=$!
+  disown
   echo "==> sing-box launched (pid=$SB_PID), waiting for inbound..."
 
   for i in $(seq 1 20); do
