@@ -31,12 +31,24 @@ if [[ -f /etc/sing-box/config.json ]]; then
   cp /etc/sing-box/config.json /tmp/sb/config.json
   sing-box check -c /tmp/sb/config.json
 
-  # ВАЖНО: stdout/stderr sing-box'а нужно редиректить в файл и
-  # disown'ить. Иначе после `exec ttyd` (ниже) ttyd заменяет
-  # process'у stdout/stderr → у sing-box'а закрываются дескрипторы
-  # → во время мультиплекс-операций он входит в degraded state и
-  # все TLS-туннели начинают возвращать 403 от Anthropic. Полная
-  # отвязка через nohup + редирект → выживает после exec.
+  # Эмпирически: ПЕРВЫЙ sing-box после старта pod'а через VLESS+REALITY
+  # к api.anthropic.com входит в degraded state — всякий запрос
+  # multi-step CLI (Claude Code) возвращает 403 Request not allowed
+  # (прямой curl POST через тот же proxy при этом работает).
+  # Отдельный sing-box, поднятый ПОЗЖЕ через тот же конфиг — работает
+  # стабильно. Гипотеза: первое REALITY-handshake к Anthropic происходит
+  # до того, как Anthropic-CDN успел проинициализировать TLS-сессию
+  # для нашего исходящего IP, и кэшируется как «degraded».
+  # Workaround: bootstrap-фаза 5 секунд → kill → fresh start.
+  echo "==> sing-box bootstrap (will be replaced after warmup)"
+  sing-box run -c /tmp/sb/config.json > /tmp/sing-box-bootstrap.log 2>&1 &
+  BOOTSTRAP_PID=$!
+  sleep 5
+  kill -TERM "$BOOTSTRAP_PID" 2>/dev/null || true
+  wait "$BOOTSTRAP_PID" 2>/dev/null || true
+  sleep 1
+
+  echo "==> sing-box fresh start"
   nohup sing-box run -c /tmp/sb/config.json > /tmp/sing-box.log 2>&1 &
   SB_PID=$!
   disown
