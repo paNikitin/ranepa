@@ -35,12 +35,8 @@ spec:
             - name: http
               containerPort: 80
           resources:
-            requests:
-              cpu: 10m
-              memory: 32Mi
-            limits:
-              cpu: 200m
-              memory: 128Mi
+            requests: { cpu: "10m", memory: "32Mi" }
+            limits:   { cpu: "200m", memory: "128Mi" }
           livenessProbe:
             httpGet: { path: /, port: 80 }
             initialDelaySeconds: 5
@@ -49,3 +45,31 @@ spec:
             httpGet: { path: /, port: 80 }
             initialDelaySeconds: 2
             periodSeconds: 10
+
+        # API sidecar — FastAPI на 127.0.0.1:8000. nginx-фронт прокси
+        # /api/* сюда. Дайте агенту добавить ручки на ходу: правка
+        # api/main.py → deploy.sh пересоберёт оба образа и накатит.
+        - name: api
+          image: harbor.parsers360.ru:10443/ranepa/${APP_SLUG}-api:${VERSION}
+          imagePullPolicy: Always
+          ports:
+            - name: api
+              containerPort: 8000
+          env:
+            # gpt2giga живёт в ranepa-tools; cluster-internal DNS отлично
+            # резолвится из любого namespace.
+            - name: VLM_URL
+              value: "http://gpt2giga.ranepa-tools.svc.cluster.local:8090"
+            - name: VLM_MODEL
+              value: "GigaChat-2-Max"
+          resources:
+            requests: { cpu: "20m", memory: "96Mi" }
+            limits:   { cpu: "500m", memory: "256Mi" }
+          readinessProbe:
+            httpGet: { path: /api/healthz, port: 8000 }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /api/healthz, port: 8000 }
+            initialDelaySeconds: 15
+            periodSeconds: 30

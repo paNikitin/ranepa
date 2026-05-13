@@ -38,6 +38,7 @@ fi
 
 VERSION="$(git rev-parse --short HEAD 2>/dev/null || date +%s)"
 IMAGE="${HARBOR}/ranepa/${APP_SLUG}:${VERSION}"
+API_IMAGE="${HARBOR}/ranepa/${APP_SLUG}-api:${VERSION}"
 
 echo "==> Building ${IMAGE}"
 docker build \
@@ -47,8 +48,16 @@ docker build \
   -t "${IMAGE}" \
   .
 
-echo "==> Pushing ${IMAGE}"
+echo "==> Building ${API_IMAGE}"
+docker build \
+  --platform linux/amd64 \
+  -f api/Dockerfile \
+  -t "${API_IMAGE}" \
+  .
+
+echo "==> Pushing ${IMAGE} and ${API_IMAGE}"
 docker push "${IMAGE}"
+docker push "${API_IMAGE}"
 
 echo "==> Applying k8s manifests to ranepa-${APP_SLUG}"
 export APP_SLUG VERSION
