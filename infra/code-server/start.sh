@@ -48,9 +48,18 @@ fi
 # Claude Code не может писать туда state-файлы (последний-чек, статсиг,
 # session id) → ведёт себя так, будто это первый запуск, и просит /login.
 mkdir -p /home/coder/.claude
+# Два варианта аутентификации:
+#   а) credentials.json в секрете → OAuth Max 5x (через Keychain/Anthropic);
+#   б) settings.json в секрете    → env-based провайдер (DeepSeek/Z.AI/…).
+# Оба mount'а живут в /etc/claude-creds/, мы копируем в правильное место.
 if [[ -f /etc/claude-creds/credentials.json ]]; then
   install -m 600 /etc/claude-creds/credentials.json /home/coder/.claude/.credentials.json
-  echo "==> Claude creds installed (subscriptionType=$(jq -r '.claudeAiOauth.subscriptionType' /home/coder/.claude/.credentials.json))"
+  echo "==> Claude OAuth creds installed (subscriptionType=$(jq -r '.claudeAiOauth.subscriptionType' /home/coder/.claude/.credentials.json))"
+fi
+if [[ -f /etc/claude-creds/settings.json ]]; then
+  install -m 600 /etc/claude-creds/settings.json /home/coder/.claude/settings.json
+  PROVIDER=$(jq -r '.env.ANTHROPIC_BASE_URL // "anthropic"' /home/coder/.claude/settings.json)
+  echo "==> Claude env-provider settings installed (base=$PROVIDER)"
 fi
 
 # Pre-seed ~/.claude.json чтобы Claude не показывал участнику onboarding-
@@ -78,10 +87,11 @@ echo "==> Claude state: onboarding done, /home/coder/work trusted"
 #    api.anthropic.com заблокирован из РФ; sing-box разворачивает
 #    inbound mixed на 127.0.0.1:1088 (одновременно SOCKS5 и HTTP).
 #    Outbound — vless+reality, конфиг приходит через k8s secret.
-if [[ -f /etc/sing-box/config.json ]]; then
+#    Для слотов с прямым доступом (DeepSeek и т.п.) секрет отсутствует
+#    → mount пустой → sing-box не стартует, proxy envs не выставляются.
+if [[ -f /etc/sing-box/config.json ]] && sing-box check -c /etc/sing-box/config.json 2>/dev/null; then
   mkdir -p /tmp/sb
   cp /etc/sing-box/config.json /tmp/sb/config.json
-  sing-box check -c /tmp/sb/config.json
 
   # Эмпирически: ПЕРВЫЙ sing-box после старта pod'а через VLESS+REALITY
   # к api.anthropic.com входит в degraded state — всякий запрос
@@ -120,8 +130,8 @@ if [[ -f /etc/sing-box/config.json ]]; then
   export NO_PROXY="localhost,127.0.0.1,::1,kubernetes.default,*.svc,*.svc.cluster.local,*.cluster.local,*.parsers360.ru,*.gigaparsers.ru,10.42.0.0/16,10.43.0.0/16,5.188.118.125"
   echo "==> Proxy enabled: HTTPS_PROXY=$HTTPS_PROXY"
 else
-  echo "==> WARN: /etc/sing-box/config.json not mounted, proxy disabled"
-  echo "==> Claude API requests will likely fail from this pod (RU blocking)"
+  echo "==> No VLESS proxy mounted — using direct connection."
+  echo "    (OK для слотов с провайдером, который доступен из РФ — DeepSeek и т.п.)"
 fi
 
 # Шаблон в /home/coder/work на ветке main. На каждом старте pod'а
