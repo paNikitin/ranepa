@@ -22,6 +22,20 @@ HARBOR="${HARBOR:-harbor.parsers360.ru:10443}"
 
 cd "$(dirname "$0")/.."
 
+# Чтобы новые правки участника попали в свежий image и k8s рестартовал
+# pod, image tag должен быть уникальным. Тег = git short-sha; если в
+# рабочей копии есть незакомиченные изменения — auto-commit'им их перед
+# `git rev-parse`, иначе несколько deploy-ев подряд получат одинаковый
+# tag и Deployment'у нечего будет роллаутить.
+if ! git diff --quiet HEAD 2>/dev/null || [[ -n "$(git ls-files --others --exclude-standard 2>/dev/null)" ]]; then
+  echo "==> Auto-committing pending changes"
+  git add -A
+  git commit -m "deploy ${APP_SLUG} at $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --author "Slot ${APP_SLUG} <${APP_SLUG}@ranepa.gigaparsers.ru>" \
+    --no-gpg-sign \
+    --quiet || true
+fi
+
 VERSION="$(git rev-parse --short HEAD 2>/dev/null || date +%s)"
 IMAGE="${HARBOR}/ranepa/${APP_SLUG}:${VERSION}"
 
@@ -41,6 +55,14 @@ export APP_SLUG VERSION
 for f in infra/k8s/deployment.yaml infra/k8s/service.yaml infra/k8s/ingress.yaml; do
   envsubst < "$f" | kubectl apply -f -
 done
+
+# Fallback на случай, когда image tag не сменился (например, кто-то
+# вручную запустил deploy.sh подряд без правок): `kubectl apply` тогда
+# не триггерит роллаут — принудительно бамп через rollout restart, он
+# просто обновит annotation в PodSpec и pod пересоздастся, подтянув
+# свежий слой (imagePullPolicy: Always).
+echo "==> Forcing rollout"
+kubectl -n "ranepa-${APP_SLUG}" rollout restart deploy/ranepa-app
 
 echo "==> Waiting rollout"
 kubectl -n "ranepa-${APP_SLUG}" rollout status deploy/ranepa-app --timeout=120s
