@@ -1,0 +1,68 @@
+# gpt2giga — прокси Anthropic API → GigaChat. Поднимается один раз в
+# ns ranepa-tools и обслуживает любой gigachat-слот (через
+# service.cluster.local).
+#
+# Creds (GIGACHAT_CREDENTIALS, GIGACHAT_SCOPE) приходят из k8s secret
+# gpt2giga-creds (создаётся out-of-band, в репу не коммитим).
+#
+# Образ: ghcr.io/ai-forever/gpt2giga:latest — публичный, pull anonymous.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gpt2giga
+  namespace: ranepa-tools
+  labels: { app: gpt2giga }
+spec:
+  replicas: 1
+  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } }
+  selector:
+    matchLabels: { app: gpt2giga }
+  template:
+    metadata:
+      labels: { app: gpt2giga }
+    spec:
+      containers:
+        - name: gpt2giga
+          image: ghcr.io/ai-forever/gpt2giga:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            # DEV вместо PROD — gpt2giga обслуживает только cluster-internal
+            # трафик, экспонирования наружу нет, API-key auth не нужен.
+            - { name: GPT2GIGA_MODE,            value: "DEV" }
+            - { name: GPT2GIGA_HOST,            value: "0.0.0.0" }
+            - { name: GPT2GIGA_PORT,            value: "8090" }
+            - { name: GPT2GIGA_LOG_LEVEL,       value: "INFO" }
+            - { name: GIGACHAT_VERIFY_SSL_CERTS, value: "false" }
+            - { name: GIGACHAT_MODEL,           value: "GigaChat-2-Max" }
+            # Bypass auth — proxy внутри cluster network, доступ только
+            # из ranepa-* namespaces. Иначе нужен GPT2GIGA_API_KEY.
+            - { name: GPT2GIGA_ENABLE_API_KEY_AUTH, value: "false" }
+          envFrom:
+            - secretRef:
+                name: gpt2giga-creds       # GIGACHAT_CREDENTIALS + GIGACHAT_SCOPE
+          ports:
+            - { name: http, containerPort: 8090 }
+          resources:
+            requests: { cpu: "50m", memory: "128Mi" }
+            limits:   { cpu: "1",   memory: "512Mi" }
+          readinessProbe:
+            httpGet: { path: /, port: 8090 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /, port: 8090 }
+            initialDelaySeconds: 30
+            periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gpt2giga
+  namespace: ranepa-tools
+  labels: { app: gpt2giga }
+spec:
+  type: ClusterIP
+  selector: { app: gpt2giga }
+  ports:
+    - { name: http, port: 8090, targetPort: 8090, protocol: TCP }
