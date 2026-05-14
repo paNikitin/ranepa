@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <title>Вайбкодинг — терминал</title>
+    <style>
+      :root {
+        --navy: #1f293b;
+        --navy-2: #161616;
+        --cyan: #31bdd9;
+        --ice: #a9b8ce;
+        --bar-h: 60px;
+      }
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      html, body {
+        height: 100%;
+        background: var(--navy-2);
+        overflow: hidden;
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+        -webkit-text-size-adjust: 100%;
+      }
+      /* iframe с самим ttyd — занимает всё минус панель снизу */
+      #term {
+        width: 100%;
+        height: calc(100% - var(--bar-h) - env(safe-area-inset-bottom));
+        border: 0;
+        display: block;
+      }
+      /* Панель быстрых клавиш */
+      #bar {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        height: calc(var(--bar-h) + env(safe-area-inset-bottom));
+        padding-bottom: env(safe-area-inset-bottom);
+        display: flex;
+        gap: 6px;
+        padding-left: 6px;
+        padding-right: 6px;
+        align-items: center;
+        background: var(--navy);
+        border-top: 1px solid #394758;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+      }
+      #bar button {
+        flex: 0 0 auto;
+        min-width: 52px;
+        height: 44px;
+        border: 1px solid #394758;
+        border-radius: 10px;
+        background: #233044;
+        color: var(--ice);
+        font-size: 15px;
+        font-weight: 600;
+        font-family: ui-monospace, "SF Mono", Menlo, monospace;
+        cursor: pointer;
+        user-select: none;
+        -webkit-tap-highlight-color: transparent;
+      }
+      #bar button:active {
+        background: var(--cyan);
+        color: var(--navy);
+      }
+      #bar button.wide { min-width: 68px; }
+      #bar .sep { flex: 0 0 1px; height: 28px; background: #394758; }
+    </style>
+  </head>
+  <body>
+    <iframe id="term" title="terminal"></iframe>
+
+    <nav id="bar" aria-label="Быстрые клавиши">
+      <button data-k="Escape"           data-c="27">Esc</button>
+      <button data-k="Tab"     data-code="Tab" data-c="9">Tab</button>
+      <button data-k="Tab"     data-code="Tab" data-c="9" data-shift="1" class="wide">⇧Tab</button>
+      <span class="sep"></span>
+      <button data-k="ArrowUp"    data-c="38">↑</button>
+      <button data-k="ArrowDown"  data-c="40">↓</button>
+      <button data-k="ArrowLeft"  data-c="37">←</button>
+      <button data-k="ArrowRight" data-c="39">→</button>
+      <span class="sep"></span>
+      <button data-k="c" data-c="67" data-ctrl="1" class="wide">Ctrl-C</button>
+      <button data-k="d" data-c="68" data-ctrl="1" class="wide">Ctrl-D</button>
+      <button data-k="Enter" data-c="13" class="wide">⏎ Enter</button>
+    </nav>
+
+    <script>
+      // iframe указывает на сам ttyd — это родительский путь без /mobile.
+      var iframe = document.getElementById("term");
+      var ttydPath = location.pathname.replace(/mobile\/?$/, "");
+      iframe.src = ttydPath;
+
+      // Найти скрытую textarea xterm.js внутри iframe (same-origin).
+      function termTextarea() {
+        try {
+          var doc = iframe.contentDocument || iframe.contentWindow.document;
+          return (
+            doc.querySelector(".xterm-helper-textarea") ||
+            doc.querySelector("textarea")
+          );
+        } catch (e) {
+          return null;
+        }
+      }
+
+      // Отправить нажатие клавиши в терминал.
+      function sendKey(opts) {
+        var ta = termTextarea();
+        if (!ta) return;
+        ta.focus();
+        var init = {
+          key: opts.key,
+          code: opts.code || opts.key,
+          keyCode: opts.keyCode,
+          which: opts.keyCode,
+          ctrlKey: !!opts.ctrl,
+          shiftKey: !!opts.shift,
+          bubbles: true,
+          cancelable: true,
+        };
+        ta.dispatchEvent(new KeyboardEvent("keydown", init));
+        ta.dispatchEvent(new KeyboardEvent("keyup", init));
+      }
+
+      document.getElementById("bar").addEventListener("click", function (e) {
+        var btn = e.target.closest("button");
+        if (!btn) return;
+        sendKey({
+          key: btn.dataset.k,
+          code: btn.dataset.code,
+          keyCode: parseInt(btn.dataset.c, 10),
+          ctrl: btn.dataset.ctrl === "1",
+          shift: btn.dataset.shift === "1",
+        });
+      });
+
+      // После загрузки iframe — поднять клавиатуру (фокус на терминал).
+      iframe.addEventListener("load", function () {
+        setTimeout(function () {
+          var ta = termTextarea();
+          if (ta) ta.focus();
+        }, 400);
+      });
+    </script>
+  </body>
+</html>

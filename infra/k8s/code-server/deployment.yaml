@@ -161,10 +161,43 @@ spec:
             initialDelaySeconds: 30
             periodSeconds: 60
 
+        # nginx-sidecar: /mobile отдаёт мобильную обёртку (iframe ttyd +
+        # панель клавиш), всё остальное проксирует в ttyd как было.
+        # Service слота смотрит на этот контейнер (:8080), не на ttyd
+        # напрямую — поэтому desktop-путь /dev/<slot>-<token>/ работает
+        # без изменений, а /dev/<slot>-<token>/mobile/ даёт телефонный UI.
+        - name: web
+          # unprivileged-вариант: слушает 8080, temp/pid в /tmp,
+          # работает под non-root uid (pod-level runAsUser=1000).
+          image: nginxinc/nginx-unprivileged:1.27-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          resources:
+            requests: { cpu: "10m", memory: "16Mi" }
+            limits:   { cpu: "100m", memory: "64Mi" }
+          volumeMounts:
+            - name: web-config
+              mountPath: /etc/nginx/conf.d/default.conf
+              subPath: default.conf
+              readOnly: true
+            - name: web-config
+              mountPath: /usr/share/nginx/html/mobile.html
+              subPath: mobile.html
+              readOnly: true
+          readinessProbe:
+            httpGet: { path: /mobile/, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 15
+
       volumes:
         - name: data
           persistentVolumeClaim:
             claimName: code-server-${APP_SLUG}-data
+        - name: web-config
+          configMap:
+            name: code-server-web
         - name: claude-creds
           secret:
             secretName: ${CLAUDE_CREDS_SECRET}

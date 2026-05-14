@@ -12,7 +12,9 @@ spec:
     app: code-server
     slot: ${APP_SLUG}
   ports:
-    - name: ttyd
+    # targetPort 8080 — nginx-sidecar (даёт /mobile + проксирует ttyd),
+    # не сам ttyd:7681. Desktop-путь работает через nginx прозрачно.
+    - name: http
       port: 80
-      targetPort: 7681
+      targetPort: 8080
       protocol: TCP
