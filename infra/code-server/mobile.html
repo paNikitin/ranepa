@@ -15,7 +15,7 @@
         --navy-2: #161616;
         --cyan: #31bdd9;
         --ice: #a9b8ce;
-        --bar-h: 60px;
+        --bar-h: 56px;
       }
       * { box-sizing: border-box; margin: 0; padding: 0; }
       html, body {
@@ -25,35 +25,40 @@
         font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
         -webkit-text-size-adjust: 100%;
       }
-      /* iframe с самим ttyd — занимает всё минус панель снизу */
+      /* iframe с ttyd. Высоту считаем в JS под visualViewport,
+         чтобы терминал не уезжал под клавиатуру/панель. */
       #term {
+        position: absolute;
+        top: 0;
+        left: 0;
         width: 100%;
-        height: calc(100% - var(--bar-h) - env(safe-area-inset-bottom));
         border: 0;
         display: block;
       }
-      /* Панель быстрых клавиш */
+      /* Панель быстрых клавиш. position: fixed + transform по
+         visualViewport — иначе на iOS прячется под клавиатурой
+         (Safari не сжимает layout viewport при открытии клавы). */
       #bar {
         position: fixed;
         bottom: 0;
         left: 0;
         right: 0;
-        height: calc(var(--bar-h) + env(safe-area-inset-bottom));
-        padding-bottom: env(safe-area-inset-bottom);
+        height: var(--bar-h);
         display: flex;
         gap: 6px;
-        padding-left: 6px;
-        padding-right: 6px;
+        padding: 0 6px;
         align-items: center;
         background: var(--navy);
         border-top: 1px solid #394758;
         overflow-x: auto;
         -webkit-overflow-scrolling: touch;
+        will-change: transform;
+        z-index: 10;
       }
       #bar button {
         flex: 0 0 auto;
         min-width: 52px;
-        height: 44px;
+        height: 42px;
         border: 1px solid #394758;
         border-radius: 10px;
         background: #233044;
@@ -63,23 +68,27 @@
         font-family: ui-monospace, "SF Mono", Menlo, monospace;
         cursor: pointer;
         user-select: none;
+        -webkit-user-select: none;
         -webkit-tap-highlight-color: transparent;
+        transition: background 60ms, color 60ms, transform 60ms;
       }
-      #bar button:active {
+      /* Явный фидбэк нажатия — класс вешается на touchstart. */
+      #bar button.pressed {
         background: var(--cyan);
         color: var(--navy);
+        transform: scale(0.93);
       }
-      #bar button.wide { min-width: 68px; }
-      #bar .sep { flex: 0 0 1px; height: 28px; background: #394758; }
+      #bar button.wide { min-width: 70px; }
+      #bar .sep { flex: 0 0 1px; height: 26px; background: #394758; }
     </style>
   </head>
   <body>
     <iframe id="term" title="terminal"></iframe>
 
     <nav id="bar" aria-label="Быстрые клавиши">
-      <button data-k="Escape"           data-c="27">Esc</button>
-      <button data-k="Tab"     data-code="Tab" data-c="9">Tab</button>
-      <button data-k="Tab"     data-code="Tab" data-c="9" data-shift="1" class="wide">⇧Tab</button>
+      <button data-k="Escape"  data-c="27">Esc</button>
+      <button data-k="Tab" data-code="Tab" data-c="9">Tab</button>
+      <button data-k="Tab" data-code="Tab" data-c="9" data-shift="1" class="wide">⇧Tab</button>
       <span class="sep"></span>
       <button data-k="ArrowUp"    data-c="38">↑</button>
       <button data-k="ArrowDown"  data-c="40">↓</button>
@@ -88,16 +97,48 @@
       <span class="sep"></span>
       <button data-k="c" data-c="67" data-ctrl="1" class="wide">Ctrl-C</button>
       <button data-k="d" data-c="68" data-ctrl="1" class="wide">Ctrl-D</button>
-      <button data-k="Enter" data-c="13" class="wide">⏎ Enter</button>
+      <button data-k="Enter" data-c="13" class="wide">⏎</button>
     </nav>
 
     <script>
-      // iframe указывает на сам ttyd — это родительский путь без /mobile.
       var iframe = document.getElementById("term");
-      var ttydPath = location.pathname.replace(/mobile\/?$/, "");
-      iframe.src = ttydPath;
+      var bar = document.getElementById("bar");
 
-      // Найти скрытую textarea xterm.js внутри iframe (same-origin).
+      // iframe указывает на сам ttyd — родительский путь без /mobile.
+      iframe.src = location.pathname.replace(/mobile\/?$/, "");
+
+      // ── Раскладка под visualViewport ───────────────────────────────
+      // iOS Safari при открытой клавиатуре НЕ сжимает layout viewport,
+      // поэтому fixed-панель прячется под клавиатурой. visualViewport
+      // даёт реальную видимую область — двигаем панель и iframe по ней.
+      var vv = window.visualViewport;
+
+      function layout() {
+        var h = vv ? vv.height : window.innerHeight;
+        var offTop = vv ? vv.offsetTop : 0;
+        var barH = bar.offsetHeight;
+        // Панель — на нижней кромке ВИДИМОЙ области (над клавиатурой).
+        var barTop = offTop + h - barH;
+        bar.style.transform = "translateY(" + (barTop - (window.innerHeight - barH)) + "px)";
+        // iframe — занимает видимую область минус панель.
+        iframe.style.height = (h - barH) + "px";
+        iframe.style.transform = "translateY(" + offTop + "px)";
+      }
+
+      if (vv) {
+        vv.addEventListener("resize", layout);
+        vv.addEventListener("scroll", layout);
+      }
+      window.addEventListener("resize", layout);
+      window.addEventListener("orientationchange", function () {
+        setTimeout(layout, 200);
+      });
+      layout();
+      // Раскладка может «доезжать» — пара отложенных пересчётов.
+      setTimeout(layout, 300);
+      setTimeout(layout, 1000);
+
+      // ── Терминал внутри iframe ─────────────────────────────────────
       function termTextarea() {
         try {
           var doc = iframe.contentDocument || iframe.contentWindow.document;
@@ -110,7 +151,6 @@
         }
       }
 
-      // Отправить нажатие клавиши в терминал.
       function sendKey(opts) {
         var ta = termTextarea();
         if (!ta) return;
@@ -129,9 +169,14 @@
         ta.dispatchEvent(new KeyboardEvent("keyup", init));
       }
 
-      document.getElementById("bar").addEventListener("click", function (e) {
-        var btn = e.target.closest("button");
-        if (!btn) return;
+      // ── Кнопки: фидбэк на touchstart, действие на touchend/click ──
+      function press(btn) {
+        btn.classList.add("pressed");
+      }
+      function release(btn) {
+        setTimeout(function () { btn.classList.remove("pressed"); }, 120);
+      }
+      function fire(btn) {
         sendKey({
           key: btn.dataset.k,
           code: btn.dataset.code,
@@ -139,13 +184,32 @@
           ctrl: btn.dataset.ctrl === "1",
           shift: btn.dataset.shift === "1",
         });
+      }
+
+      bar.querySelectorAll("button").forEach(function (btn) {
+        // touchstart — мгновенная подсветка + действие (без 300ms delay).
+        btn.addEventListener("touchstart", function (e) {
+          e.preventDefault();           // не даём фокусу уйти с терминала
+          press(btn);
+          fire(btn);
+        }, { passive: false });
+        btn.addEventListener("touchend", function () { release(btn); });
+        btn.addEventListener("touchcancel", function () { release(btn); });
+        // Фолбэк для десктопа/мыши.
+        btn.addEventListener("click", function (e) {
+          if (e.detail === 0) return;   // synthetic от touch — пропускаем
+          press(btn);
+          fire(btn);
+          release(btn);
+        });
       });
 
-      // После загрузки iframe — поднять клавиатуру (фокус на терминал).
+      // После загрузки ttyd — фокус на терминал (поднять клавиатуру).
       iframe.addEventListener("load", function () {
         setTimeout(function () {
           var ta = termTextarea();
           if (ta) ta.focus();
+          layout();
         }, 400);
       });
     </script>
