@@ -104,7 +104,7 @@ spec:
             periodSeconds: 30
 
         - name: code-server
-          image: harbor.parsers360.ru:10443/ranepa/code-server:0.1.8
+          image: harbor.parsers360.ru:10443/ranepa/code-server:0.1.9
           imagePullPolicy: Always
           env:
             - name: APP_SLUG
