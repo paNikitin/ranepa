@@ -15,7 +15,7 @@
         --navy-2: #161616;
         --cyan: #31bdd9;
         --ice: #a9b8ce;
-        --bar-h: 56px;
+        --bar-h: 100px;
       }
       * { box-sizing: border-box; margin: 0; padding: 0; }
       html, body {
@@ -35,9 +35,10 @@
         border: 0;
         display: block;
       }
-      /* Панель быстрых клавиш. position: fixed + transform по
-         visualViewport — иначе на iOS прячется под клавиатурой
-         (Safari не сжимает layout viewport при открытии клавы). */
+      /* Панель быстрых клавиш — два ряда, кнопки тянутся на всю
+         ширину (без горизонтального скролла). position: fixed +
+         transform по visualViewport — иначе на iOS прячется под
+         клавиатурой (Safari не сжимает layout viewport). */
       #bar {
         position: fixed;
         bottom: 0;
@@ -45,20 +46,22 @@
         right: 0;
         height: var(--bar-h);
         display: flex;
+        flex-direction: column;
         gap: 6px;
-        padding: 0 6px;
-        align-items: center;
+        padding: 6px;
         background: var(--navy);
         border-top: 1px solid #394758;
-        overflow-x: auto;
-        -webkit-overflow-scrolling: touch;
         will-change: transform;
         z-index: 10;
       }
+      #bar .row {
+        display: flex;
+        gap: 6px;
+        flex: 1;
+      }
       #bar button {
-        flex: 0 0 auto;
-        min-width: 52px;
-        height: 42px;
+        flex: 1 1 0;
+        min-width: 0;
         border: 1px solid #394758;
         border-radius: 10px;
         background: #233044;
@@ -78,26 +81,26 @@
         color: var(--navy);
         transform: scale(0.93);
       }
-      #bar button.wide { min-width: 70px; }
-      #bar .sep { flex: 0 0 1px; height: 26px; background: #394758; }
     </style>
   </head>
   <body>
     <iframe id="term" title="terminal"></iframe>
 
     <nav id="bar" aria-label="Быстрые клавиши">
-      <button data-k="Escape"  data-c="27">Esc</button>
-      <button data-k="Tab" data-code="Tab" data-c="9">Tab</button>
-      <button data-k="Tab" data-code="Tab" data-c="9" data-shift="1" class="wide">⇧Tab</button>
-      <span class="sep"></span>
-      <button data-k="ArrowUp"    data-c="38">↑</button>
-      <button data-k="ArrowDown"  data-c="40">↓</button>
-      <button data-k="ArrowLeft"  data-c="37">←</button>
-      <button data-k="ArrowRight" data-c="39">→</button>
-      <span class="sep"></span>
-      <button data-k="c" data-c="67" data-ctrl="1" class="wide">Ctrl-C</button>
-      <button data-k="d" data-c="68" data-ctrl="1" class="wide">Ctrl-D</button>
-      <button data-k="Enter" data-c="13" class="wide">⏎</button>
+      <div class="row">
+        <button data-k="Escape" data-c="27">Esc</button>
+        <button data-k="Tab" data-code="Tab" data-c="9">Tab</button>
+        <button data-k="Tab" data-code="Tab" data-c="9" data-shift="1">⇧Tab</button>
+        <button data-k="c" data-c="67" data-ctrl="1">Ctrl-C</button>
+        <button data-k="d" data-c="68" data-ctrl="1">Ctrl-D</button>
+      </div>
+      <div class="row">
+        <button data-k="ArrowLeft"  data-c="37">←</button>
+        <button data-k="ArrowUp"    data-c="38">↑</button>
+        <button data-k="ArrowDown"  data-c="40">↓</button>
+        <button data-k="ArrowRight" data-c="39">→</button>
+        <button data-k="Enter" data-c="13">⏎</button>
+      </div>
     </nav>
 
     <script>
