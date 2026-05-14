@@ -181,10 +181,24 @@ cat <<HELLO
 
 HELLO
 
+# Shared-сессия: все, кто открыл стенд, видят ОДИН терминал и могут
+# печатать. Достигается через tmux — ttyd на каждого клиента запускает
+# `tmux new-session -A -s ranepa`, который при первом заходе создаёт
+# сессию с claude внутри, а на втором/третьем — просто attach'ится к
+# уже живой. Сессия переживает disconnect: участник вернулся — увидел
+# тот же экран и историю.
+cat > /home/coder/.tmux.conf <<'TMUX'
+set -g mouse on
+set -g window-size largest
+set -g history-limit 50000
+set -g status off
+set -g escape-time 10
+TMUX
+
 exec ttyd \
   --port 7681 \
   --interface 0.0.0.0 \
   --writable \
   -t titleFixed="Slot ${APP_SLUG}" \
   -t fontSize=16 \
-  -- bash -lc "cd $WORKDIR && claude --dangerously-skip-permissions"
+  -- tmux new-session -A -s ranepa "cd $WORKDIR && exec claude --dangerously-skip-permissions"

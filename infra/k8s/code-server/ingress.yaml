@@ -1,9 +1,16 @@
 # Доступ к code-server-pod'у участника через
-#   https://ranepa.gigaparsers.ru/dev/${APP_SLUG}
+#   https://ranepa.gigaparsers.ru/dev/${APP_SLUG}-${DEV_TOKEN}/
 #
-# Защита: traefik basic-auth middleware. Логин/пароль каждого участника —
-# в k8s secret code-server-auth (формат htpasswd, по строке на слот).
-# StripPrefix отбрасывает /dev/${APP_SLUG} перед проксированием в ttyd.
+# Защита: секрет в самом пути (capability-URL). Раньше был traefik
+# basic-auth, но браузеры (Chrome/Safari) выбрасывают inline-credentials
+# `user:pass@host` из URL при переходе по ссылке/QR — prompt всё равно
+# вылезал. Теперь весь путь = одноразовый ключ: предсказать
+# /dev/app1-<24 hex> нельзя, отдельного логина нет.
+#
+# DEV_TOKEN — длинный случайный суффикс, выдаётся на слот.
+# envsubst подставляет ${APP_SLUG} и ${DEV_TOKEN}.
+#
+# StripPrefix отбрасывает /dev/${APP_SLUG}-${DEV_TOKEN} перед ttyd.
 
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
@@ -13,18 +20,7 @@ metadata:
 spec:
   stripPrefix:
     prefixes:
-      - /dev/${APP_SLUG}
----
-apiVersion: traefik.io/v1alpha1
-kind: Middleware
-metadata:
-  name: code-server-${APP_SLUG}-auth
-  namespace: ranepa-tools
-spec:
-  basicAuth:
-    secret: code-server-auth-${APP_SLUG}
-    realm: "Слот ${APP_SLUG}"
-    removeHeader: true
+      - /dev/${APP_SLUG}-${DEV_TOKEN}
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -35,13 +31,13 @@ metadata:
     kubernetes.io/ingress.class: traefik
     traefik.ingress.kubernetes.io/router.entrypoints: websecure
     traefik.ingress.kubernetes.io/router.tls: "true"
-    traefik.ingress.kubernetes.io/router.middlewares: ranepa-tools-code-server-${APP_SLUG}-auth@kubernetescrd,ranepa-tools-code-server-${APP_SLUG}-strip@kubernetescrd
+    traefik.ingress.kubernetes.io/router.middlewares: ranepa-tools-code-server-${APP_SLUG}-strip@kubernetescrd
 spec:
   rules:
     - host: ranepa.gigaparsers.ru
       http:
         paths:
-          - path: /dev/${APP_SLUG}
+          - path: /dev/${APP_SLUG}-${DEV_TOKEN}
             pathType: Prefix
             backend:
               service:

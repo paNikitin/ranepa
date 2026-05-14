@@ -24,7 +24,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # но не для long-running production окружения.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         bash curl ca-certificates git gnupg openssh-client \
-        sudo gettext-base jq vim less procps tini \
+        sudo gettext-base jq vim less procps tini tmux \
     && curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /usr/share/keyrings/docker.gpg \
     && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker.gpg] https://download.docker.com/linux/debian bookworm stable" \
         > /etc/apt/sources.list.d/docker.list \
