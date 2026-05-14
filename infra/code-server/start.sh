@@ -193,6 +193,10 @@ set -g window-size largest
 set -g history-limit 50000
 set -g status off
 set -g escape-time 10
+# Правильный TERM + truecolor — иначе Claude Code TUI рисует рамки
+# в ASCII-fallback ("поехавшие" буквы, чёрные блоки вместо логотипа).
+set -g default-terminal "tmux-256color"
+set -ga terminal-overrides ",xterm-256color:RGB"
 TMUX
 
 exec ttyd \

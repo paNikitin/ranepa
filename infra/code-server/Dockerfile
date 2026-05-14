@@ -17,6 +17,11 @@
 FROM node:20-bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive
+# UTF-8 locale обязателен: без него tmux считает ширину символов
+# по байтам, а Claude Code TUI скатывается в ASCII-fallback
+# (рамки рисуются как _____, логотип — чёрными блоками).
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
 
 # Системные тулы. docker-cli без daemon — daemon берём с хоста через
 # монтированный сокет (см. deployment.yaml). Это даёт code-server'у
@@ -24,7 +29,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # но не для long-running production окружения.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         bash curl ca-certificates git gnupg openssh-client \
-        sudo gettext-base jq vim less procps tini tmux \
+        sudo gettext-base jq vim less procps tini tmux ncurses-term \
     && curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /usr/share/keyrings/docker.gpg \
     && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker.gpg] https://download.docker.com/linux/debian bookworm stable" \
         > /etc/apt/sources.list.d/docker.list \
