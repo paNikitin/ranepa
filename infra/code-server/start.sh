@@ -83,13 +83,20 @@ jq '
 chmod 600 "$CLAUDE_STATE"
 echo "==> Claude state: onboarding done, /home/coder/work trusted"
 
-# 1. Стартуем sing-box в фоне для туннеля к api.anthropic.com.
-#    api.anthropic.com заблокирован из РФ; sing-box разворачивает
-#    inbound mixed на 127.0.0.1:1088 (одновременно SOCKS5 и HTTP).
-#    Outbound — vless+reality, конфиг приходит через k8s secret.
-#    Для слотов с прямым доступом (DeepSeek и т.п.) секрет отсутствует
-#    → mount пустой → sing-box не стартует, proxy envs не выставляются.
-if [[ -f /etc/sing-box/config.json ]] && sing-box check -c /etc/sing-box/config.json 2>/dev/null; then
+# Прокси к api.anthropic.com — три режима, выбор по env:
+#   1) HTTPS_PROXY_URL задан → используем напрямую (обычный HTTP-прокси
+#      от провайдера, формат http://user:pass@host:port). Sing-box не
+#      запускается. Самый простой режим.
+#   2) Sing-box config есть и валиден → запускаем sing-box на 1088,
+#      proxy envs указывают на 127.0.0.1:1088 (VLESS/Hysteria2/Reality).
+#   3) Ничего нет → прямое соединение (для DeepSeek/GigaChat, доступных из РФ).
+if [[ -n "${HTTPS_PROXY_URL:-}" ]]; then
+  export HTTPS_PROXY="$HTTPS_PROXY_URL"
+  export HTTP_PROXY="$HTTPS_PROXY_URL"
+  export NO_PROXY="localhost,127.0.0.1,::1,kubernetes.default,*.svc,*.svc.cluster.local,*.cluster.local,*.parsers360.ru,*.gigaparsers.ru,10.42.0.0/16,10.43.0.0/16,5.188.118.125"
+  # Не печатаем URL — там может быть пароль.
+  echo "==> HTTPS_PROXY set from HTTPS_PROXY_URL env"
+elif [[ -f /etc/sing-box/config.json ]] && sing-box check -c /etc/sing-box/config.json 2>/dev/null; then
   mkdir -p /tmp/sb
   cp /etc/sing-box/config.json /tmp/sb/config.json
 
