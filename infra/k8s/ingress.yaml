@@ -1,0 +1,44 @@
+# Ingress на ranepa.gigaparsers.ru/${APP_SLUG} → ranepa-app:80.
+#
+# Edge nginx терминирует TLS, traefik отдаёт self-signed на unknown SNI
+# (см. infra/edge-nginx/ranepa.gigaparsers.ru.conf). Поэтому на traefik
+# регистрируем без собственной TLS-секции.
+#
+# Префикс /${APP_SLUG} срезается middleware'ом stripprefix перед
+# проксированием в backend (он раздаётся как с корня /). Vite-сборка
+# уже скомпилирована с base=/${APP_SLUG}/, так что HTML внутри
+# ссылается на /${APP_SLUG}/assets/* — эти запросы тоже придут сюда
+# и попадут в nginx внутри пода уже с резаным префиксом.
+
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: strip-${APP_SLUG}
+  namespace: ranepa-${APP_SLUG}
+spec:
+  stripPrefix:
+    prefixes:
+      - /${APP_SLUG}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ranepa-app
+  namespace: ranepa-${APP_SLUG}
+  annotations:
+    kubernetes.io/ingress.class: traefik
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: ranepa-${APP_SLUG}-strip-${APP_SLUG}@kubernetescrd
+spec:
+  rules:
+    - host: ranepa.gigaparsers.ru
+      http:
+        paths:
+          - path: /${APP_SLUG}
+            pathType: Prefix
+            backend:
+              service:
+                name: ranepa-app
+                port:
+                  number: 80
