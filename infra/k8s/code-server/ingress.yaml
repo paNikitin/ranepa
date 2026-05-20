@@ -1,0 +1,50 @@
+# Доступ к code-server-pod'у участника через
+#   https://ranepa.gigaparsers.ru/dev/${APP_SLUG}
+#
+# Защита: traefik basic-auth middleware. Логин/пароль каждого участника —
+# в k8s secret code-server-auth (формат htpasswd, по строке на слот).
+# StripPrefix отбрасывает /dev/${APP_SLUG} перед проксированием в ttyd.
+
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: code-server-${APP_SLUG}-strip
+  namespace: ranepa-tools
+spec:
+  stripPrefix:
+    prefixes:
+      - /dev/${APP_SLUG}
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: code-server-${APP_SLUG}-auth
+  namespace: ranepa-tools
+spec:
+  basicAuth:
+    secret: code-server-auth-${APP_SLUG}
+    realm: "Слот ${APP_SLUG}"
+    removeHeader: true
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: code-server-${APP_SLUG}
+  namespace: ranepa-tools
+  annotations:
+    kubernetes.io/ingress.class: traefik
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: ranepa-tools-code-server-${APP_SLUG}-auth@kubernetescrd,ranepa-tools-code-server-${APP_SLUG}-strip@kubernetescrd
+spec:
+  rules:
+    - host: ranepa.gigaparsers.ru
+      http:
+        paths:
+          - path: /dev/${APP_SLUG}
+            pathType: Prefix
+            backend:
+              service:
+                name: code-server-${APP_SLUG}
+                port:
+                  number: 80

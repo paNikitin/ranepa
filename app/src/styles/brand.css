@@ -1,0 +1,23 @@
+/* Brand tokens — единственное место, где задаются цвета/шрифты бренда.
+   Менять отсюда: при подмене брендбука редактировать только этот файл. */
+
+:root {
+  --brand-primary:    #4d9eff;
+  --brand-primary-fg: #03101f;
+  --brand-accent:     #5ee0ff;
+  --brand-bg:         #04060d;
+  --brand-fg:         #eaf2ff;
+  --brand-fg-muted:   #93a8c8;
+  --brand-surface:    #0c1424;
+  --brand-border:     #1c2a44;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --brand-bg:       #04060d;
+    --brand-fg:       #eaf2ff;
+    --brand-fg-muted: #93a8c8;
+    --brand-surface:  #0c1424;
+    --brand-border:   #1c2a44;
+  }
+}

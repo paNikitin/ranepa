@@ -1,0 +1,62 @@
+# RBAC для одного слота. Применяется в namespace ranepa-${APP_SLUG}.
+# Даёт ServiceAccount достаточно прав, чтобы scripts/deploy.sh мог
+# делать `kubectl apply` на свой namespace и `rollout status` —
+# и НИЧЕГО за его пределами.
+#
+# Применить через envsubst:
+#   APP_SLUG=app1 envsubst < infra/k8s/bootstrap/rbac-slot.yaml | kubectl apply -f -
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: deployer
+  namespace: ranepa-${APP_SLUG}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: deployer
+  namespace: ranepa-${APP_SLUG}
+rules:
+  # Минимальный набор для apply/rollout/диагностики:
+  - apiGroups: [""]
+    resources: ["services", "configmaps", "secrets", "pods", "pods/log"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "deployments/status", "deployments/scale", "replicasets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["traefik.io", "traefik.containo.us"]
+    resources: ["middlewares", "ingressroutes"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: deployer
+  namespace: ranepa-${APP_SLUG}
+subjects:
+  - kind: ServiceAccount
+    name: deployer
+    namespace: ranepa-${APP_SLUG}
+roleRef:
+  kind: Role
+  name: deployer
+  apiGroup: rbac.authorization.k8s.io
+---
+# Long-lived token для kubeconfig'а слота. k8s 1.24+ перестал
+# создавать токены автоматически, поэтому объявляем секрет явно
+# с annotation kubernetes.io/service-account.name.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: deployer-token
+  namespace: ranepa-${APP_SLUG}
+  annotations:
+    kubernetes.io/service-account.name: deployer
+type: kubernetes.io/service-account-token
