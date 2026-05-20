@@ -1,0 +1,49 @@
+{
+  "_comment": "Шаблон конфига sing-box. Заполнить значения из vless:// URL и положить как k8s secret vless-config (key=config.json) в ns ranepa-tools. РЕАЛЬНЫЙ конфиг с ключами в репу НЕ коммитим — только этот template.",
+
+  "log": { "level": "warn", "timestamp": true },
+
+  "inbounds": [
+    {
+      "type": "mixed",
+      "tag": "local",
+      "listen": "127.0.0.1",
+      "listen_port": 1088,
+      "sniff": true
+    }
+  ],
+
+  "outbounds": [
+    {
+      "type": "vless",
+      "tag": "proxy",
+      "server": "<HOST_FROM_VLESS_URL>",
+      "server_port": 0,
+      "uuid": "<UUID>",
+      "flow": "xtls-rprx-vision",
+      "packet_encoding": "xudp",
+      "tls": {
+        "enabled": true,
+        "server_name": "<SNI>",
+        "utls": { "enabled": true, "fingerprint": "chrome" },
+        "reality": {
+          "enabled": true,
+          "public_key": "<PBK>",
+          "short_id": "<SID>"
+        }
+      }
+    },
+    { "type": "direct",  "tag": "direct" },
+    { "type": "block",   "tag": "block"  }
+  ],
+
+  "route": {
+    "rules": [
+      { "ip_is_private": true, "outbound": "direct" },
+      { "domain_suffix": ["parsers360.ru", "gigaparsers.ru", "svc.cluster.local", "cluster.local"], "outbound": "direct" },
+      { "domain": ["kubernetes.default"], "outbound": "direct" }
+    ],
+    "final": "proxy",
+    "auto_detect_interface": true
+  }
+}

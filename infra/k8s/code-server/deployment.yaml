@@ -1,0 +1,188 @@
+# Deployment одного code-server-pod'а под слот ${APP_SLUG}.
+# Запуск:
+#   APP_SLUG=app1 \
+#   CLAUDE_CREDS_SECRET=claude-credentials \
+#   VLESS_SECRET=vless-config \
+#     envsubst < deployment.yaml | kubectl apply -f -
+#
+# Переменные окружения шаблона:
+#   APP_SLUG            — идентификатор слота (app1..5, deepseek, ...)
+#   CLAUDE_CREDS_SECRET — secret в ranepa-tools, в нём ЛИБО
+#                         credentials.json (OAuth Max5x путь), ЛИБО
+#                         settings.json (env-провайдер, DeepSeek/Z.AI/…)
+#   VLESS_SECRET        — secret с sing-box config.json. Если для слота
+#                         прокси не нужен (DeepSeek доступен из РФ
+#                         напрямую) — поставить имя несуществующего
+#                         секрета, mount помечен optional=true.
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: code-server-${APP_SLUG}-data
+  namespace: ranepa-tools
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: code-server-${APP_SLUG}
+  namespace: ranepa-tools
+  labels:
+    app: code-server
+    slot: ${APP_SLUG}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate            # PVC RWO + один pod
+  selector:
+    matchLabels:
+      app: code-server
+      slot: ${APP_SLUG}
+  template:
+    metadata:
+      labels:
+        app: code-server
+        slot: ${APP_SLUG}
+    spec:
+      imagePullSecrets:
+        - name: harbor-creds-ranepa
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+
+      containers:
+        # ─────────────────────────────────────────────────────────────
+        # DinD sidecar: даёт изолированный docker daemon для билдов
+        # участника. Альтернатива монтированию /var/run/docker.sock с
+        # хоста (которое давало coder root-уровень доступа к k3s узлу).
+        # Сейчас сокет живёт в emptyDir и виден только обоим контейнерам
+        # этого pod'а. Privileged всё ещё нужен (DinD требует
+        # cgroup/mount/network capabilities), но blast radius сжат
+        # до самого pod'а.
+        # ─────────────────────────────────────────────────────────────
+        - name: dind
+          image: docker:27-dind
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+            runAsUser: 0       # переопределяем pod-level runAsUser=1000;
+            runAsGroup: 0      # dockerd-rootful требует root
+          args:
+            - --host=unix:///var/run/docker.sock
+            - --tls=false                # pod-internal communication
+            - --insecure-registry=harbor.parsers360.ru:10443
+          # postStart хук в side-process'е ждёт socket и chmod 666
+          # (по умолчанию owner root:root mode 660 — coder uid=1000
+          # не может писать). 666 в pod-internal emptyDir безопасно.
+          lifecycle:
+            postStart:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - "while [ ! -S /var/run/docker.sock ]; do sleep 0.5; done; chmod 666 /var/run/docker.sock"
+          env:
+            - name: DOCKER_TLS_CERTDIR
+              value: ""                  # disable TLS auto-setup
+          resources:
+            requests: { cpu: "50m", memory: "128Mi" }
+            limits:   { cpu: "2",   memory: "1Gi" }
+          volumeMounts:
+            - name: dind-sock
+              mountPath: /var/run
+            - name: dind-storage
+              mountPath: /var/lib/docker
+          livenessProbe:
+            exec:
+              command: ["docker", "info"]
+            initialDelaySeconds: 15
+            periodSeconds: 30
+
+        - name: code-server
+          image: harbor.parsers360.ru:10443/ranepa/code-server:0.1.8
+          imagePullPolicy: Always
+          env:
+            - name: APP_SLUG
+              value: "${APP_SLUG}"
+            - name: HOME
+              value: "/home/coder"
+            # DOCKER_HOST указывает CLI на сокет DinD-сайдкара.
+            - name: DOCKER_HOST
+              value: "unix:///var/run/docker.sock"
+            # Гасим non-essential telemetry/device-fingerprint trafic.
+            # Без этого Anthropic с hosting-IP даёт 403 Request not allowed
+            # на любой запрос (даже с валидным OAuth-токеном Max 5x).
+            # На macOS у юзера эта переменная стоит и всё работает.
+            - name: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
+              value: "1"
+          ports:
+            - name: ttyd
+              containerPort: 7681
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          volumeMounts:
+            - name: data
+              mountPath: /home/coder/work
+            # Claude OAuth-кред монтируется в /etc/claude-creds/, а start.sh
+            # копирует его в /home/coder/.claude/.credentials.json (rw, 600).
+            # Прямой mount subPath давал /home/coder/.claude/ root-owned →
+            # Claude не мог писать state-файлы и думал что это первый запуск.
+            - name: claude-creds
+              mountPath: /etc/claude-creds
+              readOnly: true
+            - name: kubeconfig
+              mountPath: /home/coder/.kube/config
+              subPath: config
+              readOnly: true
+            - name: vless-config
+              mountPath: /etc/sing-box
+              readOnly: true
+            - name: harbor-creds
+              mountPath: /etc/harbor-creds
+              readOnly: true
+            - name: dind-sock
+              mountPath: /var/run
+          readinessProbe:
+            tcpSocket: { port: 7681 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: { port: 7681 }
+            initialDelaySeconds: 30
+            periodSeconds: 60
+
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: code-server-${APP_SLUG}-data
+        - name: claude-creds
+          secret:
+            secretName: ${CLAUDE_CREDS_SECRET}
+            defaultMode: 0400
+        - name: kubeconfig
+          secret:
+            secretName: kubeconfig-${APP_SLUG}
+            defaultMode: 0400
+        - name: vless-config
+          secret:
+            secretName: ${VLESS_SECRET}
+            defaultMode: 0400
+            optional: true   # для слотов с прямым выходом (например, deepseek)
+        - name: harbor-creds
+          secret:
+            secretName: harbor-creds-ranepa
+            defaultMode: 0400
+        - name: dind-sock
+          emptyDir: {}
+        - name: dind-storage
+          emptyDir: {}
