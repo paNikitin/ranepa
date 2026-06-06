@@ -17,8 +17,9 @@ LLM/VLM запросы (нужен серверный ключ к gpt2giga proxy
   POST /api/image   — JSON {prompt, model?} → {"image": "data:image/png;base64,..."}
                       Генерация картинки через кластерный LiteLLM
                       (Gemini image-моделями).
-  POST /api/video   — JSON {prompt, model?} → {"job_id": "..."}
+  POST /api/video   — JSON {prompt, model?} → {"job_id": "...", "remaining": "N"}
                       Запуск генерации видео (Veo). Async — НЕ ждёт.
+                      Лимит VIDEO_LIMIT генераций на pod (429 при превышении).
   GET  /api/video/{job_id}
                     — {"status": "processing|completed|failed",
                        "video"?: "data:video/mp4;base64,...", "error"?: "..."}
@@ -62,6 +63,9 @@ IMAGE_MODELS = os.environ.get(
     "IMAGE_MODELS", "gemini-2.5-flash-image,gemini-3.1-flash-image-preview"
 ).split(",")
 VIDEO_MODEL = os.environ.get("VIDEO_MODEL", "veo-3.0-fast")
+# Лимит генераций видео на слот (Veo дорогой, ~$0.2-0.4/сек). Считаем
+# принятые в работу задачи за время жизни pod'а. 0 = без лимита.
+VIDEO_LIMIT = int(os.environ.get("VIDEO_LIMIT", "5"))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("api")
@@ -352,6 +356,7 @@ async def image(req: ImageRequest) -> ImageResponse:
 # которая дёргает litellm submit→poll→fetch и складывает результат.
 
 _VIDEO_JOBS: dict[str, dict] = {}
+_VIDEO_COUNT = 0  # принято в работу за время жизни pod'а
 
 
 class VideoRequest(BaseModel):
@@ -413,12 +418,20 @@ async def _run_video_job(job_id: str, prompt: str, model: str) -> None:
 
 @app.post("/api/video")
 async def video_submit(req: VideoRequest) -> dict[str, str]:
+    global _VIDEO_COUNT
     if not LITELLM_KEY:
         raise HTTPException(503, "video generation not configured (no LITELLM_KEY)")
+    if VIDEO_LIMIT and _VIDEO_COUNT >= VIDEO_LIMIT:
+        raise HTTPException(
+            429,
+            f"лимит видео исчерпан ({VIDEO_LIMIT} на это приложение). "
+            "Видео — дорогая операция; перезапусти приложение или используй картинки.",
+        )
+    _VIDEO_COUNT += 1
     job_id = uuid.uuid4().hex
     _VIDEO_JOBS[job_id] = {"status": "processing"}
     asyncio.create_task(_run_video_job(job_id, req.prompt, req.model or VIDEO_MODEL))
-    return {"job_id": job_id}
+    return {"job_id": job_id, "remaining": str(max(0, VIDEO_LIMIT - _VIDEO_COUNT)) if VIDEO_LIMIT else "unlimited"}
 
 
 @app.get("/api/video/{job_id}")
