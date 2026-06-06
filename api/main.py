@@ -14,6 +14,9 @@ LLM/VLM запросы (нужен серверный ключ к gpt2giga proxy
                       (через gpt2giga → GigaChat-2-Max).
   POST /api/pptx    — JSON {title, subtitle?, slides:[{heading, bullets|body}]}
                       → файл .pptx attachment'ом.
+  POST /api/image   — JSON {prompt, model?} → {"image": "data:image/png;base64,..."}
+                      Генерация картинки через кластерный LiteLLM
+                      (Gemini image-моделями).
 
 Расширение: если участник просит ручку, которой здесь нет —
 добавь её прямо в этот файл, deploy.sh пересоберёт image.
@@ -39,6 +42,17 @@ VLM_URL = os.environ.get(
 VLM_MODEL = os.environ.get("VLM_MODEL", "GigaChat-2-Max")
 MAX_IMAGE_BYTES = 8 * 1024 * 1024  # 8 MB
 ALLOWED_MEDIA = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+
+# LiteLLM gateway (кластерный) — для генерации картинок Gemini-моделями.
+# Ключ и base-url приходят через env (k8s secret litellm-creds).
+LITELLM_URL = os.environ.get(
+    "LITELLM_URL", "http://litellm.openclaw.svc.cluster.local:4000"
+)
+LITELLM_KEY = os.environ.get("LITELLM_KEY", "")
+# primary,fallback — пробуем по очереди (3.1-preview иногда нет в регионе).
+IMAGE_MODELS = os.environ.get(
+    "IMAGE_MODELS", "gemini-2.5-flash-image,gemini-3.1-flash-image-preview"
+).split(",")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("api")
@@ -263,3 +277,59 @@ async def pptx(req: PPTXRequest) -> StreamingResponse:
         media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
         headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
     )
+
+
+class ImageRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=2000)
+    model: str | None = None  # переопределить модель (по умолчанию — IMAGE_MODELS)
+
+
+class ImageResponse(BaseModel):
+    image: str  # data:image/png;base64,...
+
+
+@app.post("/api/image")
+async def image(req: ImageRequest) -> ImageResponse:
+    """Генерация картинки по текстовому описанию через кластерный LiteLLM.
+
+    Возвращает data-URL (можно сразу вставить в <img src>). Перебирает
+    модели из IMAGE_MODELS по очереди — если первая недоступна в регионе
+    Vertex, пробует следующую.
+    """
+    if not LITELLM_KEY:
+        raise HTTPException(503, "image generation not configured (no LITELLM_KEY)")
+
+    models = [req.model] if req.model else IMAGE_MODELS
+    last_err = "no models tried"
+
+    async with httpx.AsyncClient(timeout=120) as client:
+        for model in models:
+            try:
+                r = await client.post(
+                    f"{LITELLM_URL}/v1/images/generations",
+                    headers={"Authorization": f"Bearer {LITELLM_KEY}"},
+                    json={"model": model, "prompt": req.prompt},
+                )
+            except httpx.HTTPError as e:
+                last_err = f"{model}: {e}"
+                continue
+            if r.status_code != 200:
+                last_err = f"{model}: HTTP {r.status_code} {r.text[:200]}"
+                continue
+            body = r.json()
+            data = (body.get("data") or [{}])[0]
+            b64 = data.get("b64_json")
+            if b64:
+                return ImageResponse(image=f"data:image/png;base64,{b64}")
+            url = data.get("url")
+            if url:
+                # Некоторые модели отдают URL вместо base64 — скачаем и
+                # перекодируем, чтобы клиент всегда получал data-URL.
+                img = await client.get(url)
+                if img.status_code == 200:
+                    enc = base64.b64encode(img.content).decode("ascii")
+                    return ImageResponse(image=f"data:image/png;base64,{enc}")
+            last_err = f"{model}: no image in response"
+
+    log.warning("image gen failed: %s", last_err)
+    raise HTTPException(502, f"image gen failed: {last_err}")

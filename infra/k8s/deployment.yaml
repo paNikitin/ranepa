@@ -62,6 +62,14 @@ spec:
               value: "http://gpt2giga.ranepa-tools.svc.cluster.local:8090"
             - name: VLM_MODEL
               value: "GigaChat-2-Max"
+          # LiteLLM-креды для /api/image (генерация картинок Gemini).
+          # Secret litellm-creds создаётся в каждом slot-namespace
+          # (см. README). envFrom опционален — если секрета нет,
+          # /api/image вернёт 503, остальные ручки работают.
+          envFrom:
+            - secretRef:
+                name: litellm-creds
+                optional: true
           resources:
             requests: { cpu: "20m", memory: "96Mi" }
             limits:   { cpu: "500m", memory: "256Mi" }
