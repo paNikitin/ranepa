@@ -17,14 +17,22 @@ LLM/VLM запросы (нужен серверный ключ к gpt2giga proxy
   POST /api/image   — JSON {prompt, model?} → {"image": "data:image/png;base64,..."}
                       Генерация картинки через кластерный LiteLLM
                       (Gemini image-моделями).
+  POST /api/video   — JSON {prompt, model?} → {"job_id": "..."}
+                      Запуск генерации видео (Veo). Async — НЕ ждёт.
+  GET  /api/video/{job_id}
+                    — {"status": "processing|completed|failed",
+                       "video"?: "data:video/mp4;base64,...", "error"?: "..."}
+                      Опрашивать раз в 3-5 сек до completed (~1-3 мин).
 
 Расширение: если участник просит ручку, которой здесь нет —
 добавь её прямо в этот файл, deploy.sh пересоберёт image.
 """
 
+import asyncio
 import base64
 import logging
 import os
+import uuid
 from io import BytesIO
 from typing import Literal
 
@@ -53,6 +61,7 @@ LITELLM_KEY = os.environ.get("LITELLM_KEY", "")
 IMAGE_MODELS = os.environ.get(
     "IMAGE_MODELS", "gemini-2.5-flash-image,gemini-3.1-flash-image-preview"
 ).split(",")
+VIDEO_MODEL = os.environ.get("VIDEO_MODEL", "veo-3.0-fast")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("api")
@@ -333,3 +342,88 @@ async def image(req: ImageRequest) -> ImageResponse:
 
     log.warning("image gen failed: %s", last_err)
     raise HTTPException(502, f"image gen failed: {last_err}")
+
+
+# ── Video (Veo) — job-based async ─────────────────────────────────────
+# Veo генерит видео 1-3 минуты — синхронно отдать нельзя. Клиент шлёт
+# POST /api/video (получает job_id), затем поллит GET /api/video/{job_id}.
+# Хранилище задач — in-memory dict (для демо ок; рестарт pod'а теряет
+# незавершённые задачи — это приемлемо). На фоне крутится корутина,
+# которая дёргает litellm submit→poll→fetch и складывает результат.
+
+_VIDEO_JOBS: dict[str, dict] = {}
+
+
+class VideoRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=2000)
+    model: str | None = None
+
+
+async def _run_video_job(job_id: str, prompt: str, model: str) -> None:
+    """Фоновая корутина: submit → poll → fetch → положить в _VIDEO_JOBS."""
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            # 1. submit
+            r = await client.post(
+                f"{LITELLM_URL}/v1/videos",
+                headers={"Authorization": f"Bearer {LITELLM_KEY}"},
+                json={"model": model, "prompt": prompt},
+            )
+            if r.status_code != 200:
+                _VIDEO_JOBS[job_id] = {"status": "failed", "error": f"submit HTTP {r.status_code}: {r.text[:200]}"}
+                return
+            vid = r.json().get("id")
+            if not vid:
+                _VIDEO_JOBS[job_id] = {"status": "failed", "error": "no video id from litellm"}
+                return
+
+            # 2. poll (до ~5 минут)
+            for _ in range(60):
+                await asyncio.sleep(5)
+                s = await client.get(
+                    f"{LITELLM_URL}/v1/videos/{vid}",
+                    headers={"Authorization": f"Bearer {LITELLM_KEY}"},
+                )
+                if s.status_code != 200:
+                    continue
+                status = str(s.json().get("status", "")).lower()
+                if status in ("completed", "succeeded", "done"):
+                    break
+                if status in ("failed", "error"):
+                    _VIDEO_JOBS[job_id] = {"status": "failed", "error": f"litellm status={status}"}
+                    return
+            else:
+                _VIDEO_JOBS[job_id] = {"status": "failed", "error": "timeout waiting for video"}
+                return
+
+            # 3. fetch bytes
+            c = await client.get(
+                f"{LITELLM_URL}/v1/videos/{vid}/content",
+                headers={"Authorization": f"Bearer {LITELLM_KEY}"},
+            )
+            if c.status_code != 200:
+                _VIDEO_JOBS[job_id] = {"status": "failed", "error": f"content HTTP {c.status_code}"}
+                return
+            enc = base64.b64encode(c.content).decode("ascii")
+            _VIDEO_JOBS[job_id] = {"status": "completed", "video": f"data:video/mp4;base64,{enc}"}
+    except Exception as e:  # noqa: BLE001
+        log.warning("video job %s failed: %s", job_id, e)
+        _VIDEO_JOBS[job_id] = {"status": "failed", "error": str(e)[:300]}
+
+
+@app.post("/api/video")
+async def video_submit(req: VideoRequest) -> dict[str, str]:
+    if not LITELLM_KEY:
+        raise HTTPException(503, "video generation not configured (no LITELLM_KEY)")
+    job_id = uuid.uuid4().hex
+    _VIDEO_JOBS[job_id] = {"status": "processing"}
+    asyncio.create_task(_run_video_job(job_id, req.prompt, req.model or VIDEO_MODEL))
+    return {"job_id": job_id}
+
+
+@app.get("/api/video/{job_id}")
+async def video_status(job_id: str) -> dict:
+    job = _VIDEO_JOBS.get(job_id)
+    if job is None:
+        raise HTTPException(404, "job not found")
+    return job
