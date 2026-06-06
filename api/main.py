@@ -14,6 +14,10 @@ LLM/VLM запросы (нужен серверный ключ к gpt2giga proxy
                       (через gpt2giga → GigaChat-2-Max).
   POST /api/pptx    — JSON {title, subtitle?, slides:[{heading, bullets|body}]}
                       → файл .pptx attachment'ом.
+  POST /api/search  — JSON {query, max_results?, include_answer?}
+                      → {"answer": "...", "results": [{title, url, content}]}.
+                      Поиск в интернете через Tavily (актуальные данные,
+                      новости, факты). Для «спроси у интернета / поиск / RAG».
   POST /api/image   — JSON {prompt, model?} → {"image": "data:image/png;base64,..."}
                       Генерация картинки через кластерный LiteLLM
                       (Gemini image-моделями).
@@ -66,6 +70,10 @@ VIDEO_MODEL = os.environ.get("VIDEO_MODEL", "veo-3.0-fast")
 # Лимит генераций видео на слот (Veo дорогой, ~$0.2-0.4/сек). Считаем
 # принятые в работу задачи за время жизни pod'а. 0 = без лимита.
 VIDEO_LIMIT = int(os.environ.get("VIDEO_LIMIT", "5"))
+
+# Tavily — поиск в интернете (актуальные данные для приложений).
+TAVILY_KEY = os.environ.get("TAVILY_KEY", "")
+TAVILY_URL = "https://api.tavily.com/search"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("api")
@@ -290,6 +298,54 @@ async def pptx(req: PPTXRequest) -> StreamingResponse:
         media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
         headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
     )
+
+
+class SearchRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=400)
+    max_results: int = Field(default=5, ge=1, le=10)
+    include_answer: bool = True
+
+
+class SearchResult(BaseModel):
+    title: str
+    url: str
+    content: str
+
+
+class SearchResponse(BaseModel):
+    answer: str | None = None
+    results: list[SearchResult] = []
+
+
+@app.post("/api/search")
+async def search(req: SearchRequest) -> SearchResponse:
+    """Поиск в интернете через Tavily — актуальные данные/факты/новости."""
+    if not TAVILY_KEY:
+        raise HTTPException(503, "search not configured (no TAVILY_KEY)")
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.post(
+            TAVILY_URL,
+            json={
+                "api_key": TAVILY_KEY,
+                "query": req.query,
+                "max_results": req.max_results,
+                "include_answer": req.include_answer,
+                "search_depth": "basic",
+            },
+        )
+    if r.status_code != 200:
+        log.warning("tavily %s: %s", r.status_code, r.text[:200])
+        raise HTTPException(r.status_code, f"search upstream: {r.text[:300]}")
+    body = r.json()
+    results = [
+        SearchResult(
+            title=x.get("title", ""),
+            url=x.get("url", ""),
+            content=x.get("content", ""),
+        )
+        for x in body.get("results", [])
+    ]
+    return SearchResponse(answer=body.get("answer"), results=results)
 
 
 class ImageRequest(BaseModel):

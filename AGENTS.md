@@ -198,6 +198,11 @@ Nginx-фронт прокси'ит `/api/*` на него. Это значит: 
   → `{"text": "..."}`. Текстовый чат с GigaChat-2-Max через gpt2giga.
   Используй для «чат-ассистент / Q&A / суммаризация / переписывание»
   сценариев.
+- `POST /api/search`  — JSON `{"query": "...", "max_results"?: 5, "include_answer"?: true}`
+  → `{"answer": "...", "results": [{"title","url","content"}]}`. Поиск в
+  интернете через Tavily — актуальные данные, новости, факты, цены.
+  Используй для «поиск / спроси у интернета / новости по теме / RAG».
+  Часто связка: /api/search → результаты в /api/llm как контекст.
 - `POST /api/pptx`    — JSON
   `{"title": "...", "subtitle"?: "...", "slides": [{"heading":"...","bullets":["..."]}], "filename"?: "presentation.pptx"}`
   → файл `.pptx` attachment'ом. Стиль слайдов — тёмный фон, циан-акцент
@@ -227,6 +232,7 @@ Nginx-фронт прокси'ит `/api/*` на него. Это значит: 
 
 Примеры клиентов на фронте — в `examples/components/`:
 - `Scan.tsx`     — экран для `POST /api/vlm` (картинка + промпт).
+- `Search.tsx`   — экран «поиск в интернете» для `POST /api/search`.
 - `Ask.tsx`      — экран для `POST /api/llm` (textarea + ответ).
 - `Pitch.tsx`    — экран «скачать .pptx про моё приложение» для `POST /api/pptx`.
 - `ImageGen.tsx` — экран «картинка по описанию» для `POST /api/image`.
@@ -320,6 +326,20 @@ kubectl -n ranepa-$APP_SLUG rollout undo deploy/ranepa-app
 
 Скрипты работают одинаково из любого слота (Claude / DeepSeek /
 GigaChat) — обращаются к выделенному gpt2giga-сервису.
+
+### search.sh — поиск в интернете (Tavily)
+
+Когда нужны актуальные факты/данные/новости, которых нет в знаниях
+модели (курсы, события, цены, расписания) — ищи через Tavily,
+результат используй как контент/seed приложения.
+
+```sh
+TAVILY_KEY=$TAVILY_KEY ./scripts/search.sh "курс доллара ЦБ сегодня"
+TAVILY_KEY=$TAVILY_KEY ./scripts/search.sh "последние новости РАНХиГС" 8
+```
+
+Печатает выжимку-ответ + источники. В рантайме приложения — ручка
+`POST /api/search` (см. examples/components/Search.tsx).
 
 ### image.sh — текст → картинка
 
